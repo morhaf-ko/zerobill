@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/morhaf-ko/zerobill/internal/apply"
 	"github.com/morhaf-ko/zerobill/internal/collect"
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/github"
@@ -23,10 +24,11 @@ import (
 const usage = `usage:
   zerobill plan --config zerobill.yaml --observed observed.yaml
   zerobill observe --config zerobill.yaml [--state zerobill-state.json] [--out observed.yaml]
-  zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--interval 5m] [--count 0]
+  zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--applied zerobill-applied.json] [--interval 5m] [--count 0]
 
-observe and watch read GITHUB_TOKEN and never write to GitHub. observe fails when
-any collector fails; watch logs the error and decides without that provider.`
+observe and watch read GITHUB_TOKEN. Only watch with mode: switch writes to GitHub,
+and it writes nothing in an interval where any collector fails. observe fails when
+any collector fails; watch logs the error.`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -115,6 +117,7 @@ func watch(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	cfgPath := fs.String("config", "zerobill.yaml", "routing policy")
 	statePath := fs.String("state", "zerobill-state.json", "Blacksmith job cache")
+	appliedPath := fs.String("applied", "zerobill-applied.json", "last applied label, used in switch mode")
 	interval := fs.Duration("interval", 5*time.Minute, "time between decisions")
 	count := fs.Int("count", 0, "stop after this many decisions; 0 runs forever")
 	_ = fs.Parse(args)
@@ -129,10 +132,19 @@ func watch(args []string) error {
 	if err != nil {
 		return err
 	}
+	ctl := &controller{cfg: cfg, providers: providers}
+	if cfg.Mode == config.Switch {
+		ctl.writer = &apply.Writer{GH: c.GH}
+		ctl.appliedPath = *appliedPath
+		if ctl.applied, err = apply.LoadApplied(*appliedPath); err != nil {
+			return err
+		}
+	}
 	tick := time.NewTicker(*interval)
 	defer tick.Stop()
 	for i := 1; ; i++ {
-		if err := logDecision(os.Stdout, time.Now().UTC(), cfg, providers, c.Observe(providers)); err != nil {
+		r := c.Observe(providers)
+		if err := ctl.step(os.Stdout, time.Now().UTC(), r); err != nil {
 			return err
 		}
 		if *count > 0 && i >= *count {
@@ -142,7 +154,7 @@ func watch(args []string) error {
 	}
 }
 
-// decisionLine is one watch log entry. Nothing in it is written to GitHub.
+// decisionLine is one watch log entry.
 type decisionLine struct {
 	Time         time.Time                  `json:"time"`
 	Mode         string                     `json:"mode"`
@@ -150,26 +162,59 @@ type decisionLine struct {
 	Label        string                     `json:"label,omitempty"`
 	Reason       string                     `json:"reason,omitempty"`
 	Fallback     bool                       `json:"fallback"`
+	Held         bool                       `json:"held,omitempty"`
 	Observed     map[string]config.Observed `json:"observed"`
 	Errors       map[string]string          `json:"errors,omitempty"`
-	Repositories []string                   `json:"would_set_repositories"`
-	Variables    []string                   `json:"would_set_variables"`
+	Repositories []string                   `json:"repositories"`
+	Variables    []string                   `json:"variables"`
+	// Written lists "owner/name VARIABLE" pairs changed in this interval; null in
+	// dry-run mode and when nothing was attempted.
+	Written []string `json:"written"`
 }
 
-func logDecision(w io.Writer, now time.Time, cfg *config.Config, providers []policy.Provider, r collect.Result) error {
+// controller decides each interval and, with a writer, applies the decision.
+type controller struct {
+	cfg         *config.Config
+	providers   []policy.Provider
+	writer      *apply.Writer
+	appliedPath string
+	applied     policy.Applied
+}
+
+func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	line := decisionLine{
-		Time: now, Mode: cfg.Mode,
-		Observed:     config.Snapshot(providers, r.States).Providers,
-		Errors:       r.Errors,
-		Repositories: cfg.Repositories, Variables: cfg.Variables,
+		Time: now, Mode: c.cfg.Mode,
+		Observed:     config.Snapshot(c.providers, r.States).Providers,
+		Errors:       map[string]string{},
+		Repositories: c.cfg.Repositories, Variables: c.cfg.Variables,
 	}
-	d, err := policy.Decide(providers, r.States, cfg.Fallback)
+	for k, v := range r.Errors {
+		line.Errors[k] = v
+	}
+	d, err := policy.Decide(c.providers, r.States, c.cfg.Fallback)
 	if err != nil {
-		if line.Errors == nil {
-			line.Errors = map[string]string{}
-		}
 		line.Errors["policy"] = err.Error()
-	} else {
+	} else if c.writer != nil && len(r.Errors) > 0 {
+		line.Errors["write"] = "skipped: a collector failed"
+	} else if c.writer != nil {
+		d, line.Held = policy.Hold(d, c.applied, c.providers, r.States, now, c.cfg.Hold())
+		written, werr := c.writer.Sync(c.cfg.Repositories, c.cfg.Variables, d.Label)
+		line.Written = written
+		if line.Written == nil {
+			line.Written = []string{}
+		}
+		if werr != nil {
+			line.Errors["write"] = werr.Error()
+		}
+		// A partial write still moves jobs, so it starts the hold for the new label.
+		if (werr == nil || len(written) > 0) && (d.Label != c.applied.Label || d.Provider != c.applied.Provider) {
+			c.applied = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
+			if err := apply.SaveApplied(c.appliedPath, c.applied); err != nil {
+				line.Errors["state"] = err.Error()
+			}
+		}
+	}
+	if err == nil {
 		line.Provider, line.Label, line.Reason, line.Fallback = d.Provider, d.Label, d.Reason, d.Fallback
 	}
 	if len(line.Errors) == 0 {

@@ -14,7 +14,11 @@ A small controller runs on an always-on host, such as a Raspberry Pi. On each in
 
 1. Collects provider state.
 2. Runs the pure policy in `internal/policy`.
-3. Writes the chosen label to the configured repository variables when it changed.
+3. Writes the chosen label to the configured repository variables that differ from it.
+   A label stays for at least `min_hold` before moving back to a higher-priority
+   provider; moving off one that is no longer usable is immediate. An interval with a
+   failed collector writes nothing, so a transient API error cannot move jobs onto a
+   metered provider.
 4. Cancels and reruns jobs queued on a label that went offline, so they pick up the new
    value. `runs-on` is evaluated when a job is queued, so queued jobs keep their label.
 

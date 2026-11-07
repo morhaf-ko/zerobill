@@ -51,6 +51,28 @@ func (p Provider) Remaining(s State) float64 {
 	return p.MonthlyMinutes - s.UsedMinutes - p.ReserveMinutes
 }
 
+// Usable reports whether p can take jobs in state s and why.
+func Usable(p Provider, s State) (bool, string, error) {
+	switch p.Kind {
+	case SelfHosted:
+		if !s.Online {
+			return false, "offline", nil
+		}
+		if p.MaxQueueWait > 0 && s.OldestQueued > p.MaxQueueWait {
+			return false, fmt.Sprintf("queue waited %s", s.OldestQueued.Round(time.Second)), nil
+		}
+		return true, "online", nil
+	case Metered:
+		left := p.Remaining(s)
+		if left <= 0 {
+			return false, "free minutes at reserve", nil
+		}
+		return true, fmt.Sprintf("%.0f free minutes above reserve", left), nil
+	default:
+		return false, "", fmt.Errorf("provider %s: unknown kind %q", p.Name, p.Kind)
+	}
+}
+
 // Decide returns the first usable provider. When none is usable it returns the
 // fallback provider so jobs queue instead of spending money.
 func Decide(providers []Provider, states map[string]State, fallback string) (Decision, error) {
@@ -61,27 +83,15 @@ func Decide(providers []Provider, states map[string]State, fallback string) (Dec
 			skipped = append(skipped, p.Name+": no observation")
 			continue
 		}
-		switch p.Kind {
-		case SelfHosted:
-			if !s.Online {
-				skipped = append(skipped, p.Name+": offline")
-				continue
-			}
-			if p.MaxQueueWait > 0 && s.OldestQueued > p.MaxQueueWait {
-				skipped = append(skipped, fmt.Sprintf("%s: queue waited %s", p.Name, s.OldestQueued.Round(time.Second)))
-				continue
-			}
-			return Decision{Provider: p.Name, Label: p.Label, Reason: reason("online", skipped)}, nil
-		case Metered:
-			left := p.Remaining(s)
-			if left <= 0 {
-				skipped = append(skipped, p.Name+": free minutes at reserve")
-				continue
-			}
-			return Decision{Provider: p.Name, Label: p.Label, Reason: reason(fmt.Sprintf("%.0f free minutes above reserve", left), skipped)}, nil
-		default:
-			return Decision{}, fmt.Errorf("provider %s: unknown kind %q", p.Name, p.Kind)
+		ok, why, err := Usable(p, s)
+		if err != nil {
+			return Decision{}, err
 		}
+		if !ok {
+			skipped = append(skipped, p.Name+": "+why)
+			continue
+		}
+		return Decision{Provider: p.Name, Label: p.Label, Reason: reason(why, skipped)}, nil
 	}
 	for _, p := range providers {
 		if p.Name == fallback {
@@ -103,4 +113,39 @@ func reason(chosen string, skipped []string) string {
 		r += s
 	}
 	return r + ")"
+}
+
+// Applied is the label last written to the repository variables.
+type Applied struct {
+	Provider string    `json:"provider"`
+	Label    string    `json:"label"`
+	Since    time.Time `json:"since"`
+}
+
+// Hold keeps the applied label when d would move back to a higher-priority
+// provider before minHold has passed. A move away from an applied provider that
+// is no longer usable is never held. It returns the decision to apply and
+// whether it was held.
+func Hold(d Decision, applied Applied, providers []Provider, states map[string]State, now time.Time, minHold time.Duration) (Decision, bool) {
+	if applied.Label == "" || applied.Label == d.Label || now.Sub(applied.Since) >= minHold {
+		return d, false
+	}
+	for _, p := range providers {
+		if p.Name != applied.Provider || p.Label != applied.Label {
+			continue
+		}
+		s, ok := states[p.Name]
+		if !ok {
+			return d, false
+		}
+		if usable, why, err := Usable(p, s); err == nil && usable {
+			wait := (minHold - now.Sub(applied.Since)).Round(time.Second)
+			return Decision{
+				Provider: p.Name, Label: p.Label,
+				Reason: fmt.Sprintf("held %s for %s more; %s preferred: %s", why, wait, d.Provider, d.Reason),
+			}, true
+		}
+		return d, false
+	}
+	return d, false
 }

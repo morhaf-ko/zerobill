@@ -1,7 +1,9 @@
-// Package github is a minimal read-only GitHub REST client for zerobill's collectors.
+// Package github is a minimal GitHub REST client for zerobill's collectors and
+// variable writer.
 package github
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +14,7 @@ import (
 	"time"
 )
 
-// Client issues authenticated GET requests against the GitHub REST API.
+// Client issues authenticated requests against the GitHub REST API.
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
@@ -59,10 +61,47 @@ func (c *Client) Paginate(path string, page func(body []byte) error) error {
 	return nil
 }
 
+// StatusError is a response with a status other than 2xx.
+type StatusError struct {
+	Method, Path, Status, Message string
+	Code                          int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s %s: %s: %s", e.Method, e.Path, e.Status, e.Message)
+}
+
+// IsNotFound reports whether err is a 404 response.
+func IsNotFound(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code == http.StatusNotFound
+}
+
+// Send issues a write request with a JSON body to path, relative to BaseURL.
+func (c *Client) Send(method, path string, body any) error {
+	_, err := c.do(method, c.BaseURL+path, body, nil)
+	return err
+}
+
 func (c *Client) get(u string, out any) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, u, nil)
+	return c.do(http.MethodGet, u, nil, out)
+}
+
+func (c *Client) do(method, u string, in, out any) (string, error) {
+	var reqBody io.Reader
+	if in != nil {
+		raw, err := json.Marshal(in)
+		if err != nil {
+			return "", err
+		}
+		reqBody = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, u, reqBody)
 	if err != nil {
 		return "", err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -72,22 +111,24 @@ func (c *Client) get(u string, out any) (string, error) {
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("GET %s: %w", redact(u), err)
+		return "", fmt.Errorf("%s %s: %w", method, redact(u), err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		return "", fmt.Errorf("GET %s: %w", redact(u), err)
+		return "", fmt.Errorf("%s %s: %w", method, redact(u), err)
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		var e struct {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(body, &e)
-		return "", fmt.Errorf("GET %s: %s: %s", redact(u), resp.Status, e.Message)
+		return "", &StatusError{Method: method, Path: redact(u), Status: resp.Status, Message: e.Message, Code: resp.StatusCode}
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return "", fmt.Errorf("GET %s: %w", redact(u), err)
+	if out != nil {
+		if err := json.Unmarshal(body, out); err != nil {
+			return "", fmt.Errorf("%s %s: %w", method, redact(u), err)
+		}
 	}
 	var next string
 	if m := nextLink.FindStringSubmatch(resp.Header.Get("Link")); m != nil {

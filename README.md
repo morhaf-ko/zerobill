@@ -11,10 +11,11 @@ spend the minutes zerobill exists to save.
 
 ## Status
 
-Milestone 1, dry run. `zerobill plan` reads a policy and a provider snapshot and prints
+Milestone 2, switching. `zerobill plan` reads a policy and a provider snapshot and prints
 the label it would choose. `zerobill observe` and `zerobill watch` collect live state
-from GitHub and log decisions without writing anything. Variable switching comes next;
-see [the design](docs/design.md).
+from GitHub and log decisions. With `mode: switch`, `watch` also writes the chosen label
+to the configured repository variables. Rerunning jobs stuck on an offline label comes
+next; see [the design](docs/design.md).
 
 ## How it decides
 
@@ -26,6 +27,11 @@ Providers are tried in the order you list them:
    `monthly_minutes - reserve_minutes`. The reserve stops a switch onto a tier that
    would run dry mid-job.
 3. When nothing qualifies, the `fallback` provider is selected and jobs queue.
+
+In switch mode a label stays applied for at least `min_hold` (default `15m`) before
+moving back to a higher-priority provider, so a runner that flaps online does not
+bounce every queued job. Moving off a provider that went offline, saturated or reached
+its reserve happens on the next interval.
 
 ## Try it
 
@@ -61,6 +67,18 @@ export GITHUB_TOKEN=$(gh auth token)
 go run ./cmd/zerobill observe --config zerobill.yaml --out observed.yaml
 go run ./cmd/zerobill watch --config zerobill.yaml --interval 5m
 ```
+
+## Switching
+
+Set `mode: switch` to let `watch` write. On each interval it reads every variable in
+`variables` from every repository in `repositories`, and creates or updates only those
+that differ from the chosen label, so a manual edit is corrected on the next interval.
+An interval in which any collector failed writes nothing. The last applied label and
+its time are kept in `--applied` (default `zerobill-applied.json`) for the hold.
+
+Writing needs the `repo` scope on a classic token, or the Variables repository
+permission with write access on a fine-grained token, in addition to the read access
+above. Each log line lists the variables it changed under `written`.
 
 ## Scope
 

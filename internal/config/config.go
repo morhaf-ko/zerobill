@@ -5,15 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/morhaf-ko/zerobill/internal/policy"
 	"gopkg.in/yaml.v3"
 )
 
+// Modes. Only watch in switch mode writes to GitHub.
+const (
+	DryRun = "dry-run"
+	Switch = "switch"
+)
+
+// DefaultMinHold applies when min_hold is unset.
+const DefaultMinHold = 15 * time.Minute
+
 // Config is the operator-owned routing policy.
 type Config struct {
 	Mode string `yaml:"mode"`
+	// MinHold is how long an applied label stays before moving back to a
+	// higher-priority provider.
+	MinHold string `yaml:"min_hold"`
+	minHold time.Duration
 	// Owner is the organization or user whose runners, billing and repositories
 	// the live collectors read.
 	Owner        string     `yaml:"owner"`
@@ -52,10 +66,28 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) validate() error {
 	if c.Mode == "" {
-		c.Mode = "dry-run"
+		c.Mode = DryRun
 	}
-	if c.Mode != "dry-run" {
-		return fmt.Errorf("mode %q is not supported yet; only dry-run", c.Mode)
+	if c.Mode != DryRun && c.Mode != Switch {
+		return fmt.Errorf("mode %q is not supported; use %s or %s", c.Mode, DryRun, Switch)
+	}
+	c.minHold = DefaultMinHold
+	if c.MinHold != "" {
+		d, err := time.ParseDuration(c.MinHold)
+		if err != nil || d < 0 {
+			return fmt.Errorf("min_hold %q must be a non-negative duration", c.MinHold)
+		}
+		c.minHold = d
+	}
+	if c.Mode == Switch {
+		if len(c.Repositories) == 0 || len(c.Variables) == 0 {
+			return errors.New("switch mode needs repositories and variables")
+		}
+		for _, r := range c.Repositories {
+			if owner, name, ok := strings.Cut(r, "/"); !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+				return fmt.Errorf("repository %q must be owner/name", r)
+			}
+		}
 	}
 	if len(c.Providers) == 0 {
 		return errors.New("at least one provider is required")
@@ -78,6 +110,9 @@ func (c *Config) validate() error {
 	}
 	return nil
 }
+
+// Hold returns the parsed min_hold.
+func (c *Config) Hold() time.Duration { return c.minHold }
 
 // PolicyProviders converts the config into policy input, in priority order.
 func (c *Config) PolicyProviders() ([]policy.Provider, error) {

@@ -77,3 +77,36 @@ func TestDecideRejectsUnknownFallback(t *testing.T) {
 		t.Fatal("expected an error for an unconfigured fallback")
 	}
 }
+
+func TestHold(t *testing.T) {
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	onBlacksmith := Applied{Provider: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Since: now.Add(-5 * time.Minute)}
+	onForge := Applied{Provider: "forge", Label: "morhaf-ci", Since: now.Add(-1 * time.Minute)}
+	tests := []struct {
+		name    string
+		applied Applied
+		states  map[string]State
+		want    string
+		held    bool
+	}{
+		{"nothing applied yet", Applied{}, map[string]State{"forge": {Online: true}, "blacksmith": {}}, "forge", false},
+		{"recovery inside hold keeps metered label", onBlacksmith, map[string]State{"forge": {Online: true}, "blacksmith": {}}, "blacksmith", true},
+		{"recovery after hold switches back", Applied{Provider: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Since: now.Add(-15 * time.Minute)}, map[string]State{"forge": {Online: true}, "blacksmith": {}}, "forge", false},
+		{"applied provider at reserve switches at once", onBlacksmith, map[string]State{"forge": {Online: true}, "blacksmith": {UsedMinutes: 2800}}, "forge", false},
+		{"offline self-hosted switches at once", onForge, map[string]State{"forge": {}, "blacksmith": {}}, "blacksmith", false},
+		{"unobserved applied provider switches", onBlacksmith, map[string]State{"forge": {Online: true}}, "forge", false},
+		{"relabelled provider switches", Applied{Provider: "blacksmith", Label: "blacksmith-4vcpu-ubuntu-2404", Since: now}, map[string]State{"forge": {Online: true}, "blacksmith": {}}, "forge", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := Decide(fleet, tt.states, "forge")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, held := Hold(d, tt.applied, fleet, tt.states, now, 15*time.Minute)
+			if got.Provider != tt.want || held != tt.held {
+				t.Fatalf("got %s held=%v (%s), want %s held=%v", got.Provider, held, got.Reason, tt.want, tt.held)
+			}
+		})
+	}
+}
