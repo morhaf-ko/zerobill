@@ -1,0 +1,22 @@
+# Install the binary to /usr/local/bin, the config to /etc/zerobill/zerobill.yaml and
+# GITHUB_TOKEN=... to /etc/zerobill/env (mode 600), then:
+#   systemctl enable --now zerobill
+[Unit]
+Description=zerobill CI runner routing
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/zerobill/env
+ExecStart=/usr/local/bin/zerobill watch --config /etc/zerobill/zerobill.yaml --state ${STATE_DIRECTORY}/state.json --applied ${STATE_DIRECTORY}/applied.json --interval 5m
+StateDirectory=zerobill
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
