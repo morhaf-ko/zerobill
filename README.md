@@ -91,6 +91,8 @@ Each route tries its providers in the order it lists them:
    `monthly_minutes - reserve_minutes`. The reserve stops a switch onto a tier that
    would run dry mid-job. With `balance: pace`, the route takes the usable metered
    provider that has used the smallest share of those minutes.
+   Within `min_hold` the applied provider is kept, so paced providers swap at most
+   once per hold.
 3. A provider disabled with `zerobill disable` is skipped.
 4. When nothing qualifies, the route's `fallback` provider is selected and jobs queue.
 

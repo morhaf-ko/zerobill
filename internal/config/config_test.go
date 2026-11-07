@@ -46,6 +46,7 @@ func TestLoadRejects(t *testing.T) {
 		"duplicate":        "fallback: a\nproviders: [{name: a, label: x, kind: self-hosted}, {name: a, label: y, kind: self-hosted}]",
 		"reserve too big":  "fallback: a\nproviders: [{name: a, label: x, kind: metered, monthly_minutes: 100, reserve_minutes: 100}]",
 		"on_demand wait":   "fallback: a\nproviders: [{name: a, label: x, kind: self-hosted, on_demand: true}]",
+		"on_demand zero":   "fallback: a\nproviders: [{name: a, label: x, kind: self-hosted, on_demand: true, max_queue_wait: 0s}]",
 		"bad retry_after":  "fallback: a\nproviders: [{name: a, label: x, kind: self-hosted, max_queue_wait: 1m, on_demand: true, retry_after: later}]",
 		"route provider":   "fallback: a\nproviders: [{name: a, label: x, kind: self-hosted}]\nroutes: [{name: r, variables: [V], providers: [b]}]",
 		"route fallback":   "providers: [{name: a, label: x, kind: self-hosted}]\nroutes: [{name: r, variables: [V], providers: [a]}]",

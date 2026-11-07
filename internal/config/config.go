@@ -114,13 +114,14 @@ func (c *Config) validate() error {
 		if p.Kind == string(policy.Metered) && p.MonthlyMinutes <= p.ReserveMinutes {
 			return fmt.Errorf("metered provider %s needs monthly_minutes above reserve_minutes", p.Name)
 		}
-		if _, err := duration(p.MaxQueueWait, 0); err != nil {
+		wait, err := duration(p.MaxQueueWait, 0)
+		if err != nil {
 			return fmt.Errorf("provider %s max_queue_wait %q: %w", p.Name, p.MaxQueueWait, err)
 		}
 		if _, err := duration(p.RetryAfter, 0); err != nil {
 			return fmt.Errorf("provider %s retry_after %q: %w", p.Name, p.RetryAfter, err)
 		}
-		if p.OnDemand && (p.Kind != string(policy.SelfHosted) || p.MaxQueueWait == "") {
+		if p.OnDemand && (p.Kind != string(policy.SelfHosted) || wait <= 0) {
 			return fmt.Errorf("on_demand provider %s must be self-hosted with max_queue_wait", p.Name)
 		}
 	}

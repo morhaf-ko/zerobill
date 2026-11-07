@@ -26,7 +26,7 @@ release:
 
 dockers_v2:
   - images: ["ghcr.io/morhaf-ko/zerobill"]
-    tags: ["{{ .Version }}", "latest"]
+    tags: ["{{ .Version }}", "{{ if not .Prerelease }}latest{{ end }}"]
     platforms: [linux/amd64, linux/arm64]
     labels:
       org.opencontainers.image.source: "{{ .GitURL }}"

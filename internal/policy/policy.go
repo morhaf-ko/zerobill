@@ -3,6 +3,7 @@ package policy
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -194,7 +195,7 @@ func Hold(d Decision, applied Applied, rt Route, states map[string]State, now ti
 	if applied.Label == "" || applied.Label == d.Label || now.Sub(applied.Since) >= minHold {
 		return d, false
 	}
-	for _, p := range append(rt.Providers, rt.Fallback) {
+	for _, p := range slices.Concat(rt.Providers, []Provider{rt.Fallback}) {
 		if p.Name != applied.Provider || p.Label != applied.Label {
 			continue
 		}

@@ -259,6 +259,56 @@ func TestSwitchModePartialWriteStartsHold(t *testing.T) {
 	}
 }
 
+func TestSwitchModeMovesOnlyAfterEveryWrite(t *testing.T) {
+	stuck := map[string][]collect.Run{"home": {{Repo: "acme/ok", ID: 7, Attempt: 1}}}
+	stalled := map[string]policy.State{"home": {OldestQueued: time.Hour}, "blacksmith": {UsedMinutes: 100}, "github": {UsedMinutes: 1000}}
+	tests := []struct {
+		name     string
+		repos    []string
+		fallback bool
+		cancels  int
+	}{
+		{"every write succeeded", []string{"acme/ok"}, false, 1},
+		{"a write failed", []string{"acme/ok", "acme/denied"}, false, 0},
+		{"home still chosen as fallback", []string{"acme/ok"}, true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newController(t, "switch")
+			c.cfg.Repositories = tt.repos
+			if tt.fallback {
+				for i := range c.routes {
+					c.routes[i].Providers = c.routes[i].Providers[:1]
+					c.routes[i].Fallback = c.providers[0]
+				}
+			}
+			cancels := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.Contains(r.URL.Path, "/denied/"):
+					w.WriteHeader(http.StatusForbidden)
+				case strings.HasSuffix(r.URL.Path, "/cancel"):
+					cancels++
+					w.WriteHeader(http.StatusAccepted)
+				case r.Method == http.MethodGet:
+					w.WriteHeader(http.StatusNotFound)
+				default:
+					w.WriteHeader(http.StatusNoContent)
+				}
+			}))
+			defer srv.Close()
+			gh := github.New("t")
+			gh.BaseURL = srv.URL
+			c.writer = &apply.Writer{GH: gh}
+			c.appliedPath = filepath.Join(t.TempDir(), "applied.json")
+			line := step(t, c, 0, collect.Result{States: stalled, Movable: stuck})
+			if cancels != tt.cancels || len(line.Cancelled) != tt.cancels {
+				t.Fatalf("%d cancel requests, line %+v", cancels, line)
+			}
+		})
+	}
+}
+
 func TestStuckRunsOnlyLeaveUnusableSelfHostedLabels(t *testing.T) {
 	c := newController(t, "dry-run")
 	queued := map[string][]collect.Run{"home": {{Repo: "your-org/your-app", ID: 7, Attempt: 1}}}
