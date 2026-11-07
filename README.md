@@ -20,8 +20,9 @@ Download a binary for Linux or macOS, amd64 or arm64, from the
 publishes `checksums.txt` and a GitHub build attestation:
 
 ```sh
-sha256sum --ignore-missing -c checksums.txt
-gh attestation verify zerobill_*_linux_arm64.tar.gz --repo morhaf-ko/zerobill
+sha256sum --ignore-missing -c checksums.txt      # macOS: shasum -a 256 --ignore-missing -c checksums.txt
+gh attestation verify zerobill_<version>_<os>_<arch>.tar.gz --repo morhaf-ko/zerobill \
+  --signer-workflow morhaf-ko/zerobill/.github/workflows/release.yml
 ```
 
 Or build it with Go:
@@ -34,7 +35,10 @@ go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
 
 1. Point each job at a variable: `runs-on: ${{ vars.CI_RUNNER }}`.
 2. Copy [`examples/zerobill.yaml`](examples/zerobill.yaml) and list your owner,
-   repositories, variables and providers in priority order.
+   repositories, variables and providers in priority order. List only private
+   repositories: on a public repository, a pull request from a fork would run on your
+   self-hosted hardware, which
+   [GitHub advises against](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security).
 3. Watch the decisions in dry run for a while. Nothing is written:
 
    ```sh
