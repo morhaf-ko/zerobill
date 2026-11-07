@@ -89,9 +89,10 @@ func key(r collect.Run) string { return fmt.Sprintf("%s#%d", r.Repo, r.ID) }
 
 // Move reruns runs cancelled in an earlier interval once they completed, then
 // cancels stuck runs that were never moved. A rerun job reads the current
-// variables, so it lands on the applied label. It returns the runs it cancelled
-// and reran as "owner/name#id".
-func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time) (cancelled, rerun []string, err error) {
+// variables, so it lands on the applied label. checkpoint persists st after each
+// cancel or rerun, so a crash cannot lose a cancelled run or the loop guard. It
+// returns the runs it cancelled and reran as "owner/name#id".
+func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time, checkpoint func() error) (cancelled, rerun []string, err error) {
 	if st.Cancelled == nil {
 		st.Cancelled = map[string]Moved{}
 	}
@@ -104,27 +105,38 @@ func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time) (cancelled,
 			Status     string `json:"status"`
 			RunAttempt int    `json:"run_attempt"`
 		}
-		if err := w.GH.Get(fmt.Sprintf("/repos/%s/actions/runs/%d", m.Repo, m.ID), &run); err != nil {
-			errs = append(errs, err)
-			continue
-		}
+		err := w.GH.Get(fmt.Sprintf("/repos/%s/actions/runs/%d", m.Repo, m.ID), &run)
+		waiting := false
 		switch {
+		case err != nil:
 		case run.RunAttempt != m.Attempt:
-			// Someone else reran it.
-			delete(st.Cancelled, k)
-		case run.Status != "completed":
-			if now.Sub(m.At) > cancelTimeout {
-				delete(st.Cancelled, k)
-				errs = append(errs, fmt.Errorf("%s: cancelled %s ago and still %s; gave up", k, now.Sub(m.At).Round(time.Minute), run.Status))
-			}
-		default:
-			if err := w.GH.Send(http.MethodPost, fmt.Sprintf("/repos/%s/actions/runs/%d/rerun-failed-jobs", m.Repo, m.ID), nil); err != nil {
-				errs = append(errs, err)
-				continue
-			}
+			// Someone else reran it; it still counts as moved.
 			delete(st.Cancelled, k)
 			st.Rerun[k] = Moved{Run: m.Run, At: now}
-			rerun = append(rerun, k)
+			continue
+		case run.Status != "completed":
+			waiting = true
+		default:
+			err = w.GH.Send(http.MethodPost, fmt.Sprintf("/repos/%s/actions/runs/%d/rerun-failed-jobs", m.Repo, m.ID), nil)
+			if err == nil {
+				delete(st.Cancelled, k)
+				st.Rerun[k] = Moved{Run: m.Run, At: now}
+				rerun = append(rerun, k)
+				if err := checkpoint(); err != nil {
+					return cancelled, rerun, err
+				}
+				continue
+			}
+		}
+		if now.Sub(m.At) > cancelTimeout {
+			delete(st.Cancelled, k)
+			why := fmt.Sprintf("run still %s", run.Status)
+			if !waiting {
+				why = err.Error()
+			}
+			errs = append(errs, fmt.Errorf("gave up on %s cancelled %s ago: %s", k, now.Sub(m.At).Round(time.Minute), why))
+		} else if err != nil {
+			errs = append(errs, err)
 		}
 	}
 	for k, m := range st.Rerun {
@@ -143,7 +155,8 @@ func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time) (cancelled,
 		err := w.GH.Send(http.MethodPost, fmt.Sprintf("/repos/%s/actions/runs/%d/cancel", r.Repo, r.ID), nil)
 		var se *github.StatusError
 		if errors.As(err, &se) && se.Code == http.StatusConflict {
-			// The run finished between the scan and the cancel.
+			// The run cannot be cancelled now, usually because it finished; never retry it.
+			st.Rerun[k] = Moved{Run: r, At: now}
 			continue
 		}
 		if err != nil {
@@ -152,6 +165,9 @@ func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time) (cancelled,
 		}
 		st.Cancelled[k] = Moved{Run: r, At: now}
 		cancelled = append(cancelled, k)
+		if err := checkpoint(); err != nil {
+			return cancelled, rerun, err
+		}
 	}
 	sort.Strings(rerun)
 	return cancelled, rerun, errors.Join(errs...)

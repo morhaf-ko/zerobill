@@ -149,17 +149,17 @@ func TestMoveCancelsThenReruns(t *testing.T) {
 	run := func(id int64) collect.Run { return collect.Run{Repo: "acme/app", ID: id, Attempt: 1} }
 	st := State{Cancelled: map[string]Moved{"acme/app#4": {Run: run(4), At: t0}}}
 
-	cancelled, rerun, err := w.Move(&st, []collect.Run{run(1), run(2), run(3)}, t0)
+	cancelled, rerun, err := w.Move(&st, []collect.Run{run(1), run(2), run(3)}, t0, noop)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Run 3 finished before the cancel; run 4 was rerun by someone else.
-	if !slices.Equal(cancelled, []string{"acme/app#1", "acme/app#2"}) || len(rerun) != 0 || len(st.Cancelled) != 2 {
+	// Run 3 finished before the cancel; run 4 was rerun by someone else. Both count as moved.
+	if !slices.Equal(cancelled, []string{"acme/app#1", "acme/app#2"}) || len(rerun) != 0 || len(st.Cancelled) != 2 || len(st.Rerun) != 2 {
 		t.Fatalf("first interval cancelled %v rerun %v state %+v", cancelled, rerun, st.Cancelled)
 	}
 
 	posts = nil
-	cancelled, rerun, err = w.Move(&st, []collect.Run{run(1)}, t0.Add(5*time.Minute))
+	cancelled, rerun, err = w.Move(&st, []collect.Run{run(1)}, t0.Add(5*time.Minute), noop)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,11 +173,55 @@ func TestMoveCancelsThenReruns(t *testing.T) {
 
 	// A moved run that queues on the stale label again is left alone.
 	posts = nil
-	if cancelled, _, _ = w.Move(&st, []collect.Run{run(1)}, t0.Add(10*time.Minute)); len(cancelled) != 0 || len(posts) != 0 {
+	if cancelled, _, _ = w.Move(&st, []collect.Run{run(1)}, t0.Add(10*time.Minute), noop); len(cancelled) != 0 || len(posts) != 0 {
 		t.Fatalf("moved run 1 twice: %v %v", cancelled, posts)
 	}
-	if _, _, _ = w.Move(&st, nil, t0.Add(49*time.Hour)); len(st.Rerun) != 0 {
+	if _, _, _ = w.Move(&st, nil, t0.Add(49*time.Hour), noop); len(st.Rerun) != 0 {
 		t.Fatalf("rerun memory not pruned: %+v", st.Rerun)
+	}
+}
+
+func noop() error { return nil }
+
+func TestMoveCheckpointsEachCancel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	gh := github.New("t")
+	gh.BaseURL = srv.URL
+	var saved []int
+	st := State{}
+	checkpoint := func() error { saved = append(saved, len(st.Cancelled)); return nil }
+	runs := []collect.Run{{Repo: "acme/app", ID: 1, Attempt: 1}, {Repo: "acme/app", ID: 2, Attempt: 1}}
+	if _, _, err := (&Writer{GH: gh}).Move(&st, runs, time.Now(), checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(saved, []int{1, 2}) {
+		t.Fatalf("checkpoints %v, want one after each cancel", saved)
+	}
+}
+
+func TestMoveGivesUpOnFailingRerun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, `{"status":"completed","run_attempt":1}`)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
+	}))
+	defer srv.Close()
+	gh := github.New("t")
+	gh.BaseURL = srv.URL
+	t0 := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	st := State{Cancelled: map[string]Moved{"acme/app#1": {Run: collect.Run{Repo: "acme/app", ID: 1, Attempt: 1}, At: t0}}}
+	if _, _, err := (&Writer{GH: gh}).Move(&st, nil, t0.Add(5*time.Minute), noop); err == nil || len(st.Cancelled) != 1 {
+		t.Fatalf("want a retryable 403, got %v %+v", err, st.Cancelled)
+	}
+	_, _, err := (&Writer{GH: gh}).Move(&st, nil, t0.Add(2*time.Hour), noop)
+	if err == nil || !strings.Contains(err.Error(), "gave up") || !strings.Contains(err.Error(), "403") || len(st.Cancelled) != 0 {
+		t.Fatalf("want a give-up error naming the 403, got %v %+v", err, st.Cancelled)
 	}
 }
 
@@ -190,10 +234,10 @@ func TestMoveGivesUpOnRunThatNeverCompletes(t *testing.T) {
 	gh.BaseURL = srv.URL
 	t0 := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	st := State{Cancelled: map[string]Moved{"acme/app#1": {Run: collect.Run{Repo: "acme/app", ID: 1, Attempt: 1}, At: t0}}}
-	if _, _, err := (&Writer{GH: gh}).Move(&st, nil, t0.Add(10*time.Minute)); err != nil || len(st.Cancelled) != 1 {
+	if _, _, err := (&Writer{GH: gh}).Move(&st, nil, t0.Add(10*time.Minute), noop); err != nil || len(st.Cancelled) != 1 {
 		t.Fatalf("dropped too early: %v %+v", err, st.Cancelled)
 	}
-	if _, _, err := (&Writer{GH: gh}).Move(&st, nil, t0.Add(2*time.Hour)); err == nil || len(st.Cancelled) != 0 {
+	if _, _, err := (&Writer{GH: gh}).Move(&st, nil, t0.Add(2*time.Hour), noop); err == nil || len(st.Cancelled) != 0 {
 		t.Fatalf("want a give-up error, got %v %+v", err, st.Cancelled)
 	}
 }

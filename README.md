@@ -80,8 +80,9 @@ its time are kept in `--applied` (default `zerobill-applied.json`) for the hold.
 keeps it after the variable changes. Once every variable holds the new label, `watch`
 cancels runs with a job queued on a self-hosted label whose provider is offline or
 saturated, and on the next interval reruns their failed and cancelled jobs, which read
-the new label. A run with a started job is left alone, so no work in progress is lost,
-and a run is moved at most once. Jobs queued on the `fallback` label while nothing has
+the new label. A run is moved only when every queued job is on that label, no job has
+started and no finished job failed or was cancelled, so nothing else is stopped or
+repeated. Each run moves at most once. Jobs queued on the `fallback` label while nothing has
 free capacity stay queued.
 
 Writing needs the `repo` scope on a classic token. A fine-grained token needs write

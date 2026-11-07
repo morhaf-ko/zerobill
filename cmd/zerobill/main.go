@@ -216,7 +216,8 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		// Runs move only once every variable holds the new label, so a rerun job reads it.
 		if werr == nil {
 			var merr error
-			line.Cancelled, line.Rerun, merr = c.writer.Move(&c.state, c.stuck(d.Label, r), now)
+			checkpoint := func() error { return apply.SaveState(c.appliedPath, c.state) }
+			line.Cancelled, line.Rerun, merr = c.writer.Move(&c.state, c.stuck(d.Label, r), now, checkpoint)
 			if merr != nil {
 				line.Errors["move"] = merr.Error()
 			}

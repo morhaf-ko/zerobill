@@ -124,6 +124,7 @@ type workflowRun struct {
 type job struct {
 	ID          int64      `json:"id"`
 	Status      string     `json:"status"`
+	Conclusion  string     `json:"conclusion"`
 	Labels      []string   `json:"labels"`
 	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at"`
@@ -132,8 +133,9 @@ type job struct {
 
 // SelfHosted reports a label online when any runner carrying it is online, and
 // the age of the oldest queued job targeting it in the configured repositories.
-// It also returns the runs with a job queued on the label whose other jobs are
-// all queued or completed.
+// It also returns the runs that can move off the label: every queued job is on
+// it, no job has started, and no completed job failed or was cancelled, so a
+// rerun of failed jobs reruns only what zerobill cancelled.
 func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
 	org, err := c.ownerIsOrg()
 	if err != nil {
@@ -187,19 +189,20 @@ func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
 				if err != nil {
 					return policy.State{}, nil, err
 				}
-				onLabel, started := false, false
+				onLabel, pinned := false, false
 				for _, j := range jobs {
-					if j.Status == "queued" && slices.Contains(j.Labels, label) {
+					switch {
+					case j.Status == "queued" && slices.Contains(j.Labels, label):
 						onLabel = true
 						if age := now.Sub(j.CreatedAt); age > s.OldestQueued {
 							s.OldestQueued = age
 						}
-					}
-					if j.Status != "queued" && j.Status != "completed" {
-						started = true
+					case j.Status == "completed" && (j.Conclusion == "success" || j.Conclusion == "skipped" || j.Conclusion == "neutral"):
+					default:
+						pinned = true
 					}
 				}
-				if onLabel && !started {
+				if onLabel && !pinned {
 					movable = append(movable, Run{Repo: repo, ID: run.ID, Attempt: run.RunAttempt})
 				}
 			}
