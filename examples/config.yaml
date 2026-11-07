@@ -1,0 +1,4 @@
+# ~/.config/zerobill/config.yaml
+owner: your-org      # your GitHub user or organization
+runner: home-ci      # optional: the label of your self-hosted runner
+blacksmith: true     # optional: also use Blacksmith's free minutes

@@ -22,17 +22,15 @@ const linuxSKU = "Actions Linux"
 
 // Collector observes providers for one GitHub owner, either an organization or a user.
 type Collector struct {
-	GH *github.Client
-	// Owner owns the runners, billing account and repositories that are observed.
+	GH    *github.Client
 	Owner string
+	Org   bool
 	// Repositories, as owner/name, are scanned for queued self-hosted jobs, and for
 	// a user owner also for self-hosted runners.
 	Repositories []string
-	// StatePath caches Blacksmith job minutes between runs; empty disables the cache.
+	// StatePath caches this month's Blacksmith jobs between runs.
 	StatePath string
 	Now       func() time.Time
-
-	isOrg *bool
 }
 
 // Result holds the state of every provider that was observed and the error of
@@ -59,21 +57,22 @@ func (c *Collector) Observe(providers []policy.Provider) Result {
 	for _, p := range providers {
 		var s policy.State
 		var err error
-		switch {
-		case p.Kind == policy.SelfHosted:
+		switch p.Name {
+		case "runner":
 			var movable []Run
-			s, movable, err = c.SelfHosted(p.Label)
-			if err == nil && len(movable) > 0 {
+			s, movable, err = c.selfHosted(p.Label)
+			if len(movable) > 0 {
 				r.Movable[p.Name] = movable
 			}
-		case p.Kind == policy.Metered && isBlacksmith(p.Label):
-			s, err = c.Blacksmith()
-		case p.Kind == policy.Metered && strings.HasPrefix(p.Label, "ubuntu-"):
-			s, err = c.GitHubHosted()
-		case p.Kind == policy.Metered:
-			err = fmt.Errorf("no collector for metered label %q; use blacksmith-* or ubuntu-*", p.Label)
+		case "blacksmith":
+			var u *usage
+			if u, err = c.monthUsage(); err == nil {
+				s.UsedMinutes = u.blacksmith()
+			}
+		case "github":
+			s, err = c.gitHubHosted()
 		default:
-			err = fmt.Errorf("unknown kind %q", p.Kind)
+			err = fmt.Errorf("no collector for provider %q", p.Name)
 		}
 		if err != nil {
 			r.Errors[p.Name] = err.Error()
@@ -91,19 +90,15 @@ func (c *Collector) now() time.Time {
 	return time.Now().UTC()
 }
 
-func (c *Collector) ownerIsOrg() (bool, error) {
-	if c.isOrg != nil {
-		return *c.isOrg, nil
-	}
+// IsOrg reports whether owner is an organization rather than a user.
+func IsOrg(gh *github.Client, owner string) (bool, error) {
 	var u struct {
 		Type string `json:"type"`
 	}
-	if err := c.GH.Get("/users/"+url.PathEscape(c.Owner), &u); err != nil {
+	if err := gh.Get("/users/"+url.PathEscape(owner), &u); err != nil {
 		return false, err
 	}
-	org := u.Type == "Organization"
-	c.isOrg = &org
-	return org, nil
+	return u.Type == "Organization", nil
 }
 
 type runner struct {
@@ -129,20 +124,18 @@ type job struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
+	// RunnerName is empty for a job that never reached a runner, such as one
+	// cancelled while queued; its started_at still records queue time.
+	RunnerName string `json:"runner_name"`
 }
 
-// SelfHosted reports a label online when any runner carrying it is online, and
-// the age of the oldest queued job targeting it in the configured repositories.
-// It also returns the runs that can move off the label: every queued job is on
-// it, no job has started, and no completed job failed or was cancelled, so a
-// rerun of failed jobs reruns only what zerobill cancelled.
-func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
-	org, err := c.ownerIsOrg()
-	if err != nil {
-		return policy.State{}, nil, err
-	}
+// selfHosted reads whether runners carry label and are online, and the age of the
+// oldest job queued on it. It also returns the runs that can move off the label:
+// every queued job is on it, no job has started, and no completed job failed or
+// was cancelled, so rerunning failed jobs reruns only what zerobill cancelled.
+func (c *Collector) selfHosted(label string) (policy.State, []Run, error) {
 	paths := []string{"/orgs/" + url.PathEscape(c.Owner) + "/actions/runners?per_page=100"}
-	if !org {
+	if !c.Org {
 		paths = paths[:0]
 		for _, repo := range c.Repositories {
 			paths = append(paths, "/repos/"+repo+"/actions/runners?per_page=100")
@@ -158,8 +151,9 @@ func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
 				return err
 			}
 			for _, r := range page.Runners {
-				if r.Status == "online" && slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return l.Name == label }) {
-					s.Online = true
+				if slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return l.Name == label }) {
+					s.Registered = true
+					s.Online = s.Online || r.Status == "online"
 				}
 			}
 			return nil
@@ -211,16 +205,12 @@ func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
 	return s, movable, nil
 }
 
-// GitHubHosted sums this month's GitHub-hosted Linux minutes from the billing
-// usage report. Hosted runners are always online.
-func (c *Collector) GitHubHosted() (policy.State, error) {
-	org, err := c.ownerIsOrg()
-	if err != nil {
-		return policy.State{}, err
-	}
+// gitHubHosted sums this month's GitHub-hosted Linux minutes from the billing
+// usage report.
+func (c *Collector) gitHubHosted() (policy.State, error) {
 	now := c.now()
 	base := "/users/"
-	if org {
+	if c.Org {
 		base = "/organizations/"
 	}
 	path := fmt.Sprintf("%s%s/settings/billing/usage?year=%d&month=%d", base, url.PathEscape(c.Owner), now.Year(), int(now.Month()))
@@ -235,7 +225,7 @@ func (c *Collector) GitHubHosted() (policy.State, error) {
 	if err := c.GH.Get(path, &report); err != nil {
 		return policy.State{}, err
 	}
-	s := policy.State{Online: true}
+	var s policy.State
 	for _, it := range report.UsageItems {
 		if strings.EqualFold(it.Product, "actions") && it.SKU == linuxSKU && it.UnitType == "Minutes" {
 			s.UsedMinutes += it.Quantity
@@ -265,40 +255,63 @@ func blacksmithMultiplier(label string) float64 {
 	return float64(n) / 2
 }
 
-// billedMinutes rounds a job's duration up to whole minutes and applies the
-// Blacksmith size multiplier. Jobs not on a Blacksmith label bill nothing.
-func billedMinutes(labels []string, started, completed time.Time) float64 {
-	for _, l := range labels {
-		if isBlacksmith(l) {
-			d := completed.Sub(started)
-			if d <= 0 {
-				return 0
-			}
-			return math.Ceil(d.Minutes()) * blacksmithMultiplier(l)
-		}
+// ranMinutes is a job's wall-clock duration rounded up to whole minutes, zero
+// for a job that never reached a runner.
+func ranMinutes(j job, end time.Time) float64 {
+	if j.RunnerName == "" || j.StartedAt == nil {
+		return 0
 	}
-	return 0
+	d := end.Sub(*j.StartedAt)
+	if d <= 0 {
+		return 0
+	}
+	return math.Ceil(d.Minutes())
 }
 
-// Blacksmith estimates this month's billed Blacksmith minutes from the jobs of
-// runs created this month in every repository the owner has, caching completed
-// jobs in StatePath.
-func (c *Collector) Blacksmith() (policy.State, error) {
+// usage holds this month's jobs that ran on a runner.
+type usage struct {
+	done    map[string]jobRecord
+	running []jobRecord
+}
+
+// blacksmith sums billed Blacksmith minutes, scaling each job by vCPU/2.
+func (u *usage) blacksmith() float64 {
+	var total float64
+	add := func(r jobRecord) {
+		for _, l := range r.Labels {
+			if isBlacksmith(l) {
+				total += r.Minutes * blacksmithMultiplier(l)
+				return
+			}
+		}
+	}
+	for _, r := range u.done {
+		add(r)
+	}
+	for _, r := range u.running {
+		add(r)
+	}
+	return total
+}
+
+// monthUsage reads the jobs of runs created this month in every repository the
+// owner has, caching completed jobs in StatePath.
+func (c *Collector) monthUsage() (*usage, error) {
 	now := c.now()
-	month := now.Format("2006-01")
-	st, err := loadState(c.StatePath, month)
+	st, err := loadState(c.StatePath, now.Format("2006-01"))
 	if err != nil {
-		return policy.State{}, err
+		return nil, err
 	}
-	repos, err := c.ownerRepos()
+	repos, err := c.GH.Repos(c.Owner, c.Org)
 	if err != nil {
-		return policy.State{}, err
+		return nil, err
 	}
-	var running float64
-	for _, repo := range repos {
+	u := &usage{done: st.Jobs}
+	for _, r := range repos {
+		repo := r.Name
 		runs, err := c.monthRuns(repo, now)
 		if err != nil {
-			return policy.State{}, err
+			return nil, err
 		}
 		for _, run := range runs {
 			key := fmt.Sprintf("%d/%d", run.ID, run.RunAttempt)
@@ -307,7 +320,7 @@ func (c *Collector) Blacksmith() (policy.State, error) {
 			}
 			jobs, err := c.jobs(repo, run.ID, "all")
 			if err != nil {
-				return policy.State{}, err
+				return nil, err
 			}
 			done := run.Status == "completed"
 			for _, j := range jobs {
@@ -316,15 +329,13 @@ func (c *Collector) Blacksmith() (policy.State, error) {
 					continue
 				}
 				switch {
-				case j.Status == "completed" && j.StartedAt != nil && j.CompletedAt != nil:
-					st.Jobs[id] = billedMinutes(j.Labels, *j.StartedAt, *j.CompletedAt)
+				case j.Status == "completed" && j.CompletedAt != nil:
+					st.Jobs[id] = jobRecord{Labels: j.Labels, Minutes: ranMinutes(j, *j.CompletedAt)}
 				case j.Status == "completed":
-					st.Jobs[id] = 0
+					st.Jobs[id] = jobRecord{Labels: j.Labels}
 				default:
 					done = false
-					if j.StartedAt != nil {
-						running += billedMinutes(j.Labels, *j.StartedAt, now)
-					}
+					u.running = append(u.running, jobRecord{Labels: j.Labels, Minutes: ranMinutes(j, now)})
 				}
 			}
 			if done {
@@ -333,55 +344,9 @@ func (c *Collector) Blacksmith() (policy.State, error) {
 		}
 	}
 	if err := st.save(c.StatePath); err != nil {
-		return policy.State{}, err
-	}
-	s := policy.State{Online: true, UsedMinutes: running}
-	for _, m := range st.Jobs {
-		s.UsedMinutes += m
-	}
-	return s, nil
-}
-
-func (c *Collector) ownerRepos() ([]string, error) {
-	org, err := c.ownerIsOrg()
-	if err != nil {
 		return nil, err
 	}
-	path := "/user/repos?affiliation=owner&per_page=100"
-	if !org {
-		// Only the authenticated user can list their own private repositories.
-		var me struct {
-			Login string `json:"login"`
-		}
-		if err := c.GH.Get("/user", &me); err != nil {
-			return nil, err
-		}
-		if !strings.EqualFold(me.Login, c.Owner) {
-			return nil, fmt.Errorf("user owner %s needs a token of that user, got %s", c.Owner, me.Login)
-		}
-	} else {
-		path = "/orgs/" + url.PathEscape(c.Owner) + "/repos?type=all&per_page=100"
-	}
-	var repos []string
-	err = c.GH.Paginate(path, func(body []byte) error {
-		var page []struct {
-			FullName string `json:"full_name"`
-			Archived bool   `json:"archived"`
-			Owner    struct {
-				Login string `json:"login"`
-			} `json:"owner"`
-		}
-		if err := json.Unmarshal(body, &page); err != nil {
-			return err
-		}
-		for _, r := range page {
-			if !r.Archived && strings.EqualFold(r.Owner.Login, c.Owner) {
-				repos = append(repos, r.FullName)
-			}
-		}
-		return nil
-	})
-	return repos, err
+	return u, nil
 }
 
 // runSearchCap is the most runs the API returns for a query filtered by created or status.

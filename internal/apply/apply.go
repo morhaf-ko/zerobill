@@ -22,28 +22,9 @@ type Writer struct {
 	GH *github.Client
 }
 
-// Sync sets each variable in each repository, given as owner/name, to label.
-// Variables that already hold label are not written. It returns the variables it
-// wrote as "owner/name VARIABLE" and every failure joined.
-func (w *Writer) Sync(repos, vars []string, label string) ([]string, error) {
-	var written []string
-	var errs []error
-	for _, repo := range repos {
-		for _, name := range vars {
-			changed, err := w.set(repo, name, label)
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			if changed {
-				written = append(written, repo+" "+name)
-			}
-		}
-	}
-	return written, errors.Join(errs...)
-}
-
-func (w *Writer) set(repo, name, label string) (bool, error) {
+// Set sets the Actions variable name in repo, owner/name, to label, writing
+// only when it differs. It reports whether it wrote.
+func (w *Writer) Set(repo, name, label string) (bool, error) {
 	base := "/repos/" + repo + "/actions/variables"
 	path := base + "/" + url.PathEscape(name)
 	var cur struct {
@@ -63,7 +44,7 @@ func (w *Writer) set(repo, name, label string) (bool, error) {
 	}
 }
 
-// State is what watch keeps between intervals; switch mode persists it.
+// State is what run keeps between intervals.
 type State struct {
 	// Routes holds the label applied per route, for the minimum hold.
 	Routes map[string]policy.Applied `json:"routes,omitempty"`
@@ -178,7 +159,7 @@ func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time, checkpoint 
 	return cancelled, rerun, errors.Join(errs...)
 }
 
-// LoadState reads switch-mode state; a missing file means none.
+// LoadState reads run state; a missing file means none.
 func LoadState(path string) (State, error) {
 	var st State
 	raw, err := os.ReadFile(path)
@@ -194,7 +175,7 @@ func LoadState(path string) (State, error) {
 	return st, nil
 }
 
-// SaveState records switch-mode state.
+// SaveState records run state.
 func SaveState(path string, st State) error {
 	raw, err := json.Marshal(st)
 	if err != nil {

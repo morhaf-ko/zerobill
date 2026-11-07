@@ -16,7 +16,7 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/policy"
 )
 
-func TestSyncWritesOnlyChangedVariables(t *testing.T) {
+func TestSetWritesOnlyChangedVariables(t *testing.T) {
 	values := map[string]string{"CI_RUNNER": "home-ci", "LIGHT_RUNNER": "ubuntu-24.04"}
 	var writes []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,48 +52,25 @@ func TestSyncWritesOnlyChangedVariables(t *testing.T) {
 	gh := github.New("t")
 	gh.BaseURL = srv.URL
 	w := &Writer{GH: gh}
-	vars := []string{"CI_RUNNER", "RELEASE_RUNNER", "LIGHT_RUNNER"}
-
-	got, err := w.Sync([]string{"acme/app"}, vars, "ubuntu-24.04")
-	if err != nil {
-		t.Fatal(err)
+	var wrote []string
+	for _, name := range []string{"CI_RUNNER", "RELEASE_RUNNER", "LIGHT_RUNNER"} {
+		changed, err := w.Set("acme/app", name, "ubuntu-24.04")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed {
+			wrote = append(wrote, name)
+		}
 	}
-	if want := []string{"acme/app CI_RUNNER", "acme/app RELEASE_RUNNER"}; !slices.Equal(got, want) {
-		t.Fatalf("written %v, want %v", got, want)
+	if want := []string{"CI_RUNNER", "RELEASE_RUNNER"}; !slices.Equal(wrote, want) {
+		t.Fatalf("written %v, want %v", wrote, want)
 	}
 	if want := []string{"PATCH /repos/acme/app/actions/variables/CI_RUNNER", "POST /repos/acme/app/actions/variables"}; !slices.Equal(writes, want) {
 		t.Fatalf("requests %v, want %v", writes, want)
 	}
-
 	writes = nil
-	got, err = w.Sync([]string{"acme/app"}, vars, "ubuntu-24.04")
-	if err != nil || len(got) != 0 || len(writes) != 0 {
-		t.Fatalf("second sync wrote %v %v: %v", got, writes, err)
-	}
-}
-
-func TestSyncReportsEveryFailure(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/denied/") {
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
-			return
-		}
-		if r.Method == http.MethodGet {
-			fmt.Fprint(w, `{"value":"home-ci"}`)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-	gh := github.New("t")
-	gh.BaseURL = srv.URL
-	got, err := (&Writer{GH: gh}).Sync([]string{"acme/denied", "acme/app"}, []string{"CI_RUNNER"}, "ubuntu-24.04")
-	if err == nil || !strings.Contains(err.Error(), "403") {
-		t.Fatalf("want a 403 error, got %v", err)
-	}
-	if !slices.Equal(got, []string{"acme/app CI_RUNNER"}) {
-		t.Fatalf("written %v", got)
+	if changed, err := w.Set("acme/app", "CI_RUNNER", "ubuntu-24.04"); changed || err != nil || len(writes) != 0 {
+		t.Fatalf("second set wrote %v %v: %v", changed, writes, err)
 	}
 }
 

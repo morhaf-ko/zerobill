@@ -16,7 +16,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      packages: write
       id-token: write
       attestations: write
     steps:
@@ -29,12 +28,6 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test ./...
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
@@ -45,10 +38,3 @@ jobs:
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: ./dist/checksums.txt
-      - id: image
-        run: echo "digest=$(docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v}" --format '{{json .Manifest.Digest}}' | tr -d '"')" >> "$GITHUB_OUTPUT"
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-name: ghcr.io/${{ github.repository }}
-          subject-digest: ${{ steps.image.outputs.digest }}
-          push-to-registry: true

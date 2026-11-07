@@ -6,9 +6,10 @@ import (
 	"path/filepath"
 )
 
-// Write replaces path with raw through a temporary file in the same directory.
+// Write replaces path with raw, readable only by its owner, through a temporary
+// file in the same directory.
 func Write(path string, raw []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")

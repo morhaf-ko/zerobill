@@ -1,22 +1,18 @@
-# Install the binary to /usr/local/bin, the config to /etc/zerobill/zerobill.yaml and
-# GITHUB_TOKEN=... to /etc/zerobill/env (mode 600), then:
-#   systemctl enable --now zerobill
+# A user service, so zerobill uses your GitHub CLI login:
+#   cp zerobill.service ~/.config/systemd/user/
+#   systemctl --user enable --now zerobill
+#   loginctl enable-linger "$USER"    # keep running while you are logged out
+# It only logs until you add --apply to ExecStart.
 [Unit]
-Description=zerobill CI runner routing
+Description=zerobill
 Wants=network-online.target
 After=network-online.target
 
 [Service]
-EnvironmentFile=/etc/zerobill/env
-ExecStart=/usr/local/bin/zerobill watch --config /etc/zerobill/zerobill.yaml --state ${STATE_DIRECTORY}/state.json --applied ${STATE_DIRECTORY}/applied.json --overrides ${STATE_DIRECTORY}/overrides.json --interval 5m
-StateDirectory=zerobill
-DynamicUser=yes
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/zerobill run
 Restart=on-failure
 RestartSec=30
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
