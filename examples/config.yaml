@@ -2,3 +2,4 @@
 owner: your-org      # your GitHub user or organization
 runner: home-ci      # optional: the label of your self-hosted runner
 blacksmith: true     # optional: also use Blacksmith's free minutes
+notify: https://ntfy.sh/your-topic   # optional: a message when zerobill changes runner

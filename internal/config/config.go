@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,9 @@ type Config struct {
 	Runner string `yaml:"runner"`
 	// Blacksmith adds Blacksmith's free minutes.
 	Blacksmith bool `yaml:"blacksmith"`
+	// Notify is an ntfy topic, Discord or Slack webhook, or any URL that takes a
+	// plain-text POST, told whenever zerobill changes its choice.
+	Notify string `yaml:"notify"`
 }
 
 // Path returns the config file: $XDG_CONFIG_HOME/zerobill/config.yaml, else
@@ -59,12 +63,15 @@ func Load(path string) (*Config, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
 		if strings.Contains(err.Error(), "not found in type") {
-			return nil, fmt.Errorf("%s: %w; the config takes only owner, runner and blacksmith", path, err)
+			return nil, fmt.Errorf("%s: %w; the config takes only owner, runner, blacksmith and notify", path, err)
 		}
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if c.Owner == "" {
 		return nil, fmt.Errorf("%s: owner is required", path)
+	}
+	if u, err := url.Parse(c.Notify); c.Notify != "" && (err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "") {
+		return nil, fmt.Errorf("%s: notify must be an http or https URL", path)
 	}
 	return &c, nil
 }

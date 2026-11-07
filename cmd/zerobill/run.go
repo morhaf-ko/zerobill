@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/morhaf-ko/zerobill/internal/apply"
 	"github.com/morhaf-ko/zerobill/internal/collect"
 	"github.com/morhaf-ko/zerobill/internal/discover"
+	"github.com/morhaf-ko/zerobill/internal/notify"
 	pauses "github.com/morhaf-ko/zerobill/internal/pause"
 	"github.com/morhaf-ko/zerobill/internal/policy"
 )
@@ -159,6 +161,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	}
 	allWritten := true
 	chosen := map[string]bool{}
+	var changes []string
 	for _, rt := range c.a.routes {
 		applied := c.state.Routes[rt.Variable]
 		d, held := policy.Hold(policy.Decide(rt, states), applied, rt, states, now)
@@ -188,6 +191,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		}
 		if took && (d.Label != applied.Label || d.Provider != applied.Provider) {
 			c.state.Routes[rt.Variable] = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
+			changes = append(changes, fmt.Sprintf("%s → %s (%s)", rt.Variable, d.Label, d.Reason))
 		}
 		l.Routes = append(l.Routes, rl)
 	}
@@ -203,6 +207,15 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		}
 		if err := apply.SaveState(c.a.appliedPath(), c.state); err != nil {
 			l.Errors["state"] = err.Error()
+		}
+	}
+	if len(changes) > 0 && c.a.cfg.Notify != "" {
+		msg := "zerobill: " + strings.Join(changes, "; ")
+		if !c.apply {
+			msg += " [log only]"
+		}
+		if err := notify.Send(c.a.cfg.Notify, msg); err != nil {
+			l.Errors["notify"] = err.Error()
 		}
 	}
 	if len(l.Errors) == 0 {

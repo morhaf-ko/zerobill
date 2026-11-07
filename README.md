@@ -69,12 +69,13 @@ Or download a binary for Linux or macOS from the
    To keep it running across reboots on Linux, use the systemd user service in
    [`examples/zerobill.service`](examples/zerobill.service).
 
-## Add free capacity
+## Options
 
 | | Add to the config | Then |
 | --- | --- | --- |
 | **Your own runner** | `runner: home-ci` | Install GitHub's runner with that label; see the [self-hosted runner guide](docs/homelab.md). zerobill uses it first and moves jobs away once it stops. |
 | **Blacksmith** | `blacksmith: true` | Install the [Blacksmith](https://www.blacksmith.sh/) GitHub app. Its 3,000 free minutes are shared with GitHub's so both last the month. |
+| **Notifications** | `notify: https://ntfy.sh/your-topic` | Get a message whenever zerobill changes runner. Discord and Slack webhook URLs work too. |
 
 Keep dependency bots on the hosted tiers, so your machine stays free for you:
 

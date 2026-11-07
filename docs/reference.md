@@ -9,6 +9,7 @@
 | `owner` | Required. The GitHub user or organization whose private repositories zerobill routes. |
 | `runner` | The label of your self-hosted runners. Leave it out without one. |
 | `blacksmith` | `true` to use Blacksmith's free minutes too. |
+| `notify` | A URL told whenever a variable's choice changes: an [ntfy](https://ntfy.sh/) topic, a Discord or Slack webhook, or anything that accepts a plain-text POST. Without `--apply` the message ends in `[log only]`. |
 
 State lives in `~/.local/state/zerobill` (`$XDG_STATE_HOME/zerobill`): a cache of this
 month's jobs, the last decision per variable, and pauses.
