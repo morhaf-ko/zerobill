@@ -118,8 +118,10 @@ zerobill reads `GITHUB_TOKEN`. For an organization, a fine-grained token needs:
 | Repository: Variables, read and write | Write `CI_RUNNER` in switch mode |
 | Repository: Metadata, read | List repositories |
 
-In `dry-run`, read access is enough. A classic token needs `repo` and `admin:org` for an
-organization, or `repo` and `user` for a personal account.
+In `dry-run`, read access is enough. With Blacksmith, give Actions read access to every
+repository of the owner, since its minutes are summed across all of them. For a personal
+account, or as an alternative, a classic token with `repo` and `admin:org` (organization)
+or `repo` and `user` (personal account) covers everything.
 
 ## Fair use
 

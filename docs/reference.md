@@ -90,7 +90,9 @@ Each log line lists every route's decision with the variables it changed under
 `zerobill disable PROVIDER [--for 72h]` writes `--overrides` (default
 `zerobill-overrides.json`); a running `watch` reads it on its next interval. Without
 `--for` the provider stays disabled until `zerobill enable PROVIDER`. In switch mode,
-runs queued on a disabled self-hosted label are moved like runs on a stalled one.
+runs queued on a disabled self-hosted label are moved like runs on a stalled one. Pass
+`disable` and `enable` the same `--overrides` path as `watch`; the container image and
+Compose example share one working directory, so the defaults match there.
 
 ## Configuration
 
