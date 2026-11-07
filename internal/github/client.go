@@ -3,6 +3,7 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,7 +33,11 @@ func (c *Client) Get(path string, out any) error {
 	return err
 }
 
-// Paginate calls page with each response body of path until no next link remains.
+// ErrStop, returned by a Paginate page callback, ends pagination without an error.
+var ErrStop = errors.New("stop pagination")
+
+// Paginate calls page with each response body of path until no next link remains
+// or page returns ErrStop.
 func (c *Client) Paginate(path string, page func(body []byte) error) error {
 	u := c.BaseURL + path
 	for u != "" {
@@ -41,7 +46,9 @@ func (c *Client) Paginate(path string, page func(body []byte) error) error {
 		if err != nil {
 			return err
 		}
-		if err := page(raw); err != nil {
+		if err := page(raw); errors.Is(err, ErrStop) {
+			return nil
+		} else if err != nil {
 			return fmt.Errorf("GET %s: %w", redact(u), err)
 		}
 		if next != "" && !sameHost(next, c.BaseURL) {

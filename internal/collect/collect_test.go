@@ -247,7 +247,8 @@ func TestBlacksmithSplitsMonthOverSearchCap(t *testing.T) {
 	f.routes["/repos/acme/app/actions/runs"] = func(w http.ResponseWriter, r *http.Request) {
 		created := r.URL.Query().Get("created")
 		if created == ">=2026-11-01" {
-			fmt.Fprint(w, `{"total_count":1500,"workflow_runs":[]}`)
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/acme/app/actions/runs?page=2>; rel="next"`, f.srv.URL))
+			fmt.Fprint(w, `{"total_count":1500,"workflow_runs":[{"id":1,"run_attempt":1,"status":"completed"}]}`)
 			return
 		}
 		days = append(days, created)
@@ -258,6 +259,9 @@ func TestBlacksmithSplitsMonthOverSearchCap(t *testing.T) {
 	}
 	if len(days) != 7 || days[0] != "2026-11-01" || days[6] != "2026-11-07" {
 		t.Fatalf("day queries %v, want 2026-11-01..07", days)
+	}
+	if n := f.hits["/repos/acme/app/actions/runs"]; n != 8 {
+		t.Fatalf("%d run list requests, want 1 capped page plus 7 days", n)
 	}
 }
 
