@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/discover"
 	"github.com/morhaf-ko/zerobill/internal/github"
-	"github.com/morhaf-ko/zerobill/internal/override"
+	pauses "github.com/morhaf-ko/zerobill/internal/pause"
 	"github.com/morhaf-ko/zerobill/internal/policy"
 )
 
@@ -134,6 +135,9 @@ func TestDryRunWritesNothing(t *testing.T) {
 	if l.Apply || l.Routes[0].Written != nil || len(vars.values) != 0 || l.Routes[0].Provider != "blacksmith" {
 		t.Fatalf("line %+v values %v", l, vars.values)
 	}
+	if _, err := os.Stat(c.a.appliedPath()); !os.IsNotExist(err) {
+		t.Fatalf("dry run saved state: %v", err)
+	}
 }
 
 func TestQueueStallLatchesUntilARunnerIsOnline(t *testing.T) {
@@ -159,7 +163,7 @@ func TestQueueStallLatchesUntilARunnerIsOnline(t *testing.T) {
 
 func TestPauseTakesTheRunnerOut(t *testing.T) {
 	c, _ := newTestController(t, false)
-	if err := override.Save(c.a.pausePath(), override.Set{Paused: map[string]override.Entry{"runner": {Since: now, Until: now.Add(time.Hour)}}}); err != nil {
+	if err := (pauses.Set{"runner": now.Add(time.Hour)}).Save(c.a.pausePath()); err != nil {
 		t.Fatal(err)
 	}
 	l := step(t, c, 0, result(policy.State{Online: true, Registered: true}))
@@ -171,14 +175,14 @@ func TestPauseTakesTheRunnerOut(t *testing.T) {
 func TestRender(t *testing.T) {
 	a := &app{cfg: &config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}}
 	a.providers, a.routes = build(a.cfg, 2000)
-	states := map[string]policy.State{"runner": {Online: true, UsedMinutes: 500}, "blacksmith": {UsedMinutes: 1200}, "github": {UsedMinutes: 200}}
+	states := map[string]policy.State{"runner": {Online: true}, "blacksmith": {UsedMinutes: 1200}, "github": {UsedMinutes: 200}}
 	found := discover.Result{Repos: []discover.Repo{{Name: "acme/app"}}, Fixed: []string{"acme/app .github/workflows/ci.yml:5: ubuntu-latest"}}
 	var out bytes.Buffer
 	if err := render(&out, time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC), a, nil, states, found, nil); err != nil {
 		t.Fatal(err)
 	}
 	// 6 of 30 days gone: Blacksmith's 1200 minutes project to 6000, past its 2700 on 14 Nov.
-	for _, want := range []string{"20% of the month", "6000 min, runs out 14 Nov", "1500 min", "CI_RUNNER   home-ci", "about $3.00", "fixed runner, change to ${{ vars.CI_RUNNER }}: acme/app"} {
+	for _, want := range []string{"20% of the month", "6000 min, runs out 14 Nov", "1500 min", "CI_RUNNER   home-ci", "fixed runner, change to ${{ vars.CI_RUNNER }}: acme/app"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q in:\n%s", want, out.String())
 		}

@@ -4,7 +4,6 @@ package discover
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -16,8 +15,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// RunsOn is one runs-on declaration in a workflow file.
-type RunsOn struct {
+// decl is one runs-on declaration in a workflow file.
+type decl struct {
 	Path string
 	Line int
 	// Value is the declaration as written, lists joined with ", ".
@@ -29,9 +28,9 @@ type RunsOn struct {
 
 var varRef = regexp.MustCompile(`vars\.([A-Za-z0-9_]+)`)
 
-// ParseRunsOn returns the runs-on declaration of every job in a workflow file. A
+// parseRunsOn returns the runs-on declaration of every job in a workflow file. A
 // runner group or label map is reported with its keys in Value and no Labels.
-func ParseRunsOn(path, text string) ([]RunsOn, error) {
+func parseRunsOn(path, text string) ([]decl, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -39,7 +38,7 @@ func ParseRunsOn(path, text string) ([]RunsOn, error) {
 	if len(doc.Content) == 0 {
 		return nil, nil
 	}
-	var out []RunsOn
+	var out []decl
 	jobs := child(doc.Content[0], "jobs")
 	if jobs == nil || jobs.Kind != yaml.MappingNode {
 		return nil, nil
@@ -70,8 +69,8 @@ func child(n *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-func runsOn(path string, line int, v *yaml.Node) RunsOn {
-	r := RunsOn{Path: path, Line: line}
+func runsOn(path string, line int, v *yaml.Node) decl {
+	r := decl{Path: path, Line: line}
 	var parts []string
 	switch v.Kind {
 	case yaml.ScalarNode:
@@ -103,9 +102,9 @@ func literal(s string) []string {
 	return []string{s}
 }
 
-// Workflows returns the runs-on declarations of every workflow in repo. A
+// workflows returns the runs-on declarations of every workflow in repo. A
 // repository without workflows returns none.
-func Workflows(gh *github.Client, repo string) ([]RunsOn, error) {
+func workflows(gh *github.Client, repo string) ([]decl, error) {
 	var files []struct {
 		Name, Path, Type string
 	}
@@ -116,7 +115,7 @@ func Workflows(gh *github.Client, repo string) ([]RunsOn, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []RunsOn
+	var out []decl
 	for _, f := range files {
 		if f.Type != "file" || !(strings.HasSuffix(f.Name, ".yml") || strings.HasSuffix(f.Name, ".yaml")) {
 			continue
@@ -134,7 +133,7 @@ func Workflows(gh *github.Client, repo string) ([]RunsOn, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s/%s: %w", repo, f.Path, err)
 		}
-		decls, err := ParseRunsOn(f.Path, string(raw))
+		decls, err := parseRunsOn(f.Path, string(raw))
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", repo, err)
 		}
@@ -149,37 +148,6 @@ func escapePath(p string) string {
 		parts[i] = url.PathEscape(s)
 	}
 	return strings.Join(parts, "/")
-}
-
-// PrivateRepos lists the owner's private, non-archived repositories, sorted.
-// A user owner must be the token's user.
-func PrivateRepos(gh *github.Client, owner string, org bool) ([]string, error) {
-	path := "/orgs/" + url.PathEscape(owner) + "/repos?type=private&per_page=100"
-	if !org {
-		path = "/user/repos?visibility=private&affiliation=owner&per_page=100"
-	}
-	var repos []string
-	err := gh.Paginate(path, func(body []byte) error {
-		var page []struct {
-			FullName string `json:"full_name"`
-			Archived bool   `json:"archived"`
-			Private  bool   `json:"private"`
-			Owner    struct {
-				Login string `json:"login"`
-			} `json:"owner"`
-		}
-		if err := json.Unmarshal(body, &page); err != nil {
-			return err
-		}
-		for _, r := range page {
-			if r.Private && !r.Archived && strings.EqualFold(r.Owner.Login, owner) {
-				repos = append(repos, r.FullName)
-			}
-		}
-		return nil
-	})
-	sort.Strings(repos)
-	return repos, err
 }
 
 // Variables zerobill sets: CI_RUNNER for everyone's jobs, BOT_RUNNER for checks
@@ -203,15 +171,20 @@ type Result struct {
 	Errors []string
 }
 
-// Discover scans the owner's private repositories.
+// Discover scans the owner's private repositories, sorted by name.
 func Discover(gh *github.Client, owner string, org bool) (Result, error) {
 	var r Result
-	names, err := PrivateRepos(gh, owner, org)
+	repos, err := gh.Repos(owner, org)
 	if err != nil {
 		return r, err
 	}
-	for _, name := range names {
-		decls, err := Workflows(gh, name)
+	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+	for _, repo := range repos {
+		if !repo.Private {
+			continue
+		}
+		name := repo.Name
+		decls, err := workflows(gh, name)
 		if err != nil {
 			r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", name, err))
 			continue

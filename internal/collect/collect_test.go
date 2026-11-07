@@ -50,7 +50,7 @@ func (f *fake) json(path, body string) {
 func (f *fake) collector(owner string, repos ...string) *Collector {
 	gh := github.New("test-token")
 	gh.BaseURL = f.srv.URL
-	return &Collector{GH: gh, Owner: owner, Repositories: repos, Now: func() time.Time { return now }}
+	return &Collector{GH: gh, Owner: owner, Org: owner == "acme", Repositories: repos, Now: func() time.Time { return now }}
 }
 
 func ts(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
@@ -88,7 +88,7 @@ func TestSelfHostedOrg(t *testing.T) {
 		{"id":20,"status":"in_progress","labels":["home-ci"],"created_at":%q},
 		{"id":21,"status":"queued","labels":["home-ci"],"created_at":%q}]}`, ts(time.Hour), ts(12*time.Minute)))
 
-	s, movable, err := f.collector("acme", "acme/app").SelfHosted("home-ci")
+	s, movable, err := f.collector("acme", "acme/app").selfHosted("home-ci")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestSelfHostedUserReadsRepositoryRunners(t *testing.T) {
 	f.json("/repos/octo/app/actions/runners", `{"runners":[{"status":"offline","labels":[{"name":"home-ci"}]}]}`)
 	f.json("/repos/octo/app/actions/runs", `{"workflow_runs":[]}`)
 
-	s, movable, err := f.collector("octo", "octo/app").SelfHosted("home-ci")
+	s, movable, err := f.collector("octo", "octo/app").selfHosted("home-ci")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,11 +140,11 @@ func TestGitHubHosted(t *testing.T) {
 				}
 				fmt.Fprint(w, billingReport)
 			}
-			s, err := f.collector(tc.owner).GitHubHosted()
+			s, err := f.collector(tc.owner).gitHubHosted()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !s.Online || s.UsedMinutes != 50 {
+			if s.UsedMinutes != 50 {
 				t.Fatalf("got %+v, want 50 Linux minutes", s)
 			}
 		})
@@ -236,17 +236,13 @@ func TestObserveRoutesProvidersAndReportsErrors(t *testing.T) {
 		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 	}
 	r := f.collector("acme").Observe([]policy.Provider{
-		{Name: "home", Label: "home-ci", Kind: policy.SelfHosted},
+		{Name: "runner", Label: "home-ci", Kind: policy.SelfHosted},
 		{Name: "github", Label: "ubuntu-24.04", Kind: policy.Metered},
-		{Name: "typo", Label: "ubuntu24", Kind: policy.Metered},
 	})
-	if !strings.Contains(r.Errors["typo"], "no collector") {
-		t.Fatalf("typo: %+v", r.Errors)
+	if _, ok := r.States["runner"]; ok || !strings.Contains(r.Errors["runner"], "403") {
+		t.Fatalf("runner: states %+v errors %+v", r.States, r.Errors)
 	}
-	if _, ok := r.States["home"]; ok || !strings.Contains(r.Errors["home"], "403") {
-		t.Fatalf("home: states %+v errors %+v", r.States, r.Errors)
-	}
-	if strings.Contains(r.Errors["home"], "test-token") {
+	if strings.Contains(r.Errors["runner"], "test-token") {
 		t.Fatal("error leaks the token")
 	}
 	if r.States["github"].UsedMinutes != 50 {
@@ -254,33 +250,19 @@ func TestObserveRoutesProvidersAndReportsErrors(t *testing.T) {
 	}
 }
 
-func TestServedMinutesSkipJobsThatNeverRan(t *testing.T) {
+func TestBlacksmithSkipsJobsThatNeverRan(t *testing.T) {
 	f := newFake(t)
-	f.json("/users/acme", `{"type":"Organization"}`)
 	f.json("/orgs/acme/repos", `[{"full_name":"acme/app","archived":false,"owner":{"login":"acme"}}]`)
-	f.json("/orgs/acme/actions/runners", `{"runners":[{"status":"online","labels":[{"name":"home-ci"}]}]}`)
 	f.json("/repos/acme/app/actions/runs", `{"workflow_runs":[{"id":1,"run_attempt":1,"status":"completed"}]}`)
 	f.json("/repos/acme/app/actions/runs/1/jobs", fmt.Sprintf(`{"jobs":[
-		{"id":10,"status":"completed","labels":["home-ci"],"started_at":%q,"completed_at":%q,"runner_name":"home-1"},
-		{"id":11,"status":"completed","labels":["home-ci"],"started_at":%q,"completed_at":%q,"runner_name":""},
-		{"id":12,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q,"runner_name":""}]}`,
+		{"id":10,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q,"runner_name":"bs-1"},
+		{"id":11,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q,"runner_name":""}]}`,
 		ts(3*time.Hour), ts(3*time.Hour-150*time.Second),
-		ts(2*time.Hour), ts(time.Hour),
 		ts(2*time.Hour), ts(time.Hour)))
-	providers := []policy.Provider{
-		{Name: "home", Label: "home-ci", Kind: policy.SelfHosted},
-		{Name: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Kind: policy.Metered},
-	}
-	r := f.collector("acme", "acme/app").Observe(providers)
-	// Job 10 ran 2m30s; jobs 11 and 12 waited in a queue and were cancelled.
-	if r.States["home"].UsedMinutes != 3 || r.States["blacksmith"].UsedMinutes != 0 || len(r.Errors) != 0 {
+	r := f.collector("acme").Observe([]policy.Provider{{Name: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Kind: policy.Metered}})
+	// Job 10 ran 2m30s; job 11 waited in a queue and was cancelled.
+	if r.States["blacksmith"].UsedMinutes != 3 || len(r.Errors) != 0 {
 		t.Fatalf("states %+v errors %+v", r.States, r.Errors)
-	}
-
-	f.routes["/orgs/acme/repos"] = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }
-	r = f.collector("acme", "acme/app").Observe(providers)
-	if _, ok := r.States["home"]; !ok || r.Warnings["home"] == "" || r.Errors["blacksmith"] == "" || r.Errors["home"] != "" {
-		t.Fatalf("a failed month scan must only block Blacksmith: states %+v errors %+v warnings %+v", r.States, r.Errors, r.Warnings)
 	}
 }
 
@@ -290,7 +272,7 @@ func TestOldCacheIsRebuilt(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, err := loadState(path, "2026-11")
-	if err != nil || len(st.Jobs) != 0 || len(st.Runs) != 0 || st.Version != stateVersion {
+	if err != nil || len(st.Jobs) != 0 || len(st.Runs) != 0 {
 		t.Fatalf("got %+v %v", st, err)
 	}
 }
@@ -318,14 +300,5 @@ func TestBlacksmithSplitsMonthOverSearchCap(t *testing.T) {
 	}
 	if n := f.hits["/repos/acme/app/actions/runs"]; n != 8 {
 		t.Fatalf("%d run list requests, want 1 capped page plus 7 days", n)
-	}
-}
-
-func TestBlacksmithUserOwnerNeedsOwnToken(t *testing.T) {
-	f := newFake(t)
-	f.json("/users/octo", `{"type":"User"}`)
-	f.json("/user", `{"login":"someone-else"}`)
-	if _, err := f.collector("octo").monthUsage(); err == nil || !strings.Contains(err.Error(), "needs a token") {
-		t.Fatalf("expected a token owner error, got %v", err)
 	}
 }

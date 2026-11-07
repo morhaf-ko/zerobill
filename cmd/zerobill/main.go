@@ -3,7 +3,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,7 +15,7 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/collect"
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/github"
-	"github.com/morhaf-ko/zerobill/internal/override"
+	pauses "github.com/morhaf-ko/zerobill/internal/pause"
 	"github.com/morhaf-ko/zerobill/internal/policy"
 )
 
@@ -35,7 +34,8 @@ const usage = `zerobill keeps GitHub Actions jobs on free runners.
 usage:
   zerobill [status]                     free minutes, current choices and problems
   zerobill run [--apply]                keep CI_RUNNER and BOT_RUNNER on the best free
-                                        runner; without --apply it only logs
+                                        runner, every 5 minutes; without --apply it
+                                        only logs
   zerobill pause runner|blacksmith|github [duration]
   zerobill resume runner|blacksmith|github
   zerobill version
@@ -72,19 +72,20 @@ func main() {
 	}
 }
 
-// app is what every command needs: the config, GitHub access and the providers
-// and routes the config implies.
+// app is what every command needs: the config and the providers and routes it
+// implies, plus GitHub access for commands that read GitHub.
 type app struct {
 	cfg       *config.Config
-	gh        *github.Client
-	col       *collect.Collector
-	org       bool
 	stateDir  string
 	providers []policy.Provider
 	routes    []policy.Route
+	gh        *github.Client
+	col       *collect.Collector
+	org       bool
 }
 
-func load() (*app, error) {
+// load reads the config; with online set it also connects to GitHub.
+func load(online bool) (*app, error) {
 	path, err := config.Path()
 	if err != nil {
 		return nil, err
@@ -97,18 +98,42 @@ func load() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
+	a := &app{cfg: cfg, stateDir: stateDir}
+	if !online {
+		a.providers, a.routes = build(cfg, 0)
+		return a, nil
+	}
 	token, err := githubToken()
 	if err != nil {
 		return nil, err
 	}
-	gh := github.New(token)
-	col := &collect.Collector{GH: gh, Owner: cfg.Owner, StatePath: filepath.Join(stateDir, "cache.json")}
-	org, err := col.OwnerIsOrg()
-	if err != nil {
+	a.gh = github.New(token)
+	if a.org, err = collect.IsOrg(a.gh, cfg.Owner); err != nil {
 		return nil, fmt.Errorf("read owner %s: %w", cfg.Owner, err)
 	}
-	a := &app{cfg: cfg, gh: gh, col: col, org: org, stateDir: stateDir}
-	a.providers, a.routes = build(cfg, includedMinutes(gh, cfg.Owner, org))
+	var me struct {
+		Login string `json:"login"`
+		Plan  struct {
+			Name string `json:"name"`
+		} `json:"plan"`
+	}
+	if err := a.gh.Get("/user", &me); err != nil {
+		return nil, fmt.Errorf("read the signed-in user: %w", err)
+	}
+	plan := me.Plan.Name
+	if a.org {
+		var o struct {
+			Plan struct {
+				Name string `json:"name"`
+			} `json:"plan"`
+		}
+		_ = a.gh.Get("/orgs/"+cfg.Owner, &o)
+		plan = o.Plan.Name
+	} else if !strings.EqualFold(me.Login, cfg.Owner) {
+		return nil, fmt.Errorf("owner %s is a personal account, so zerobill must run as that user, not %s", cfg.Owner, me.Login)
+	}
+	a.col = &collect.Collector{GH: a.gh, Owner: cfg.Owner, Org: a.org, StatePath: filepath.Join(stateDir, "cache.json")}
+	a.providers, a.routes = build(cfg, includedMinutes(plan))
 	return a, nil
 }
 
@@ -117,7 +142,10 @@ func githubToken() (string, error) {
 	if t := os.Getenv("GITHUB_TOKEN"); t != "" {
 		return t, nil
 	}
-	out, err := exec.Command("gh", "auth", "token").Output()
+	out, err := exec.Command("gh", "auth", "token", "--hostname", "github.com").Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		return "", errors.New("no GitHub access: install the GitHub CLI and run gh auth login, or set GITHUB_TOKEN")
+	}
 	if err != nil || strings.TrimSpace(string(out)) == "" {
 		return "", errors.New("no GitHub access: run gh auth login, or set GITHUB_TOKEN")
 	}
@@ -153,30 +181,21 @@ func build(cfg *config.Config, githubMinutes float64) ([]policy.Provider, []poli
 	}
 }
 
-// includedMinutes returns the plan's included Linux minutes: GitHub Free $12,
-// Pro and Team $18, at $0.006 a minute. Unreadable plans assume Free.
-func includedMinutes(gh *github.Client, owner string, org bool) float64 {
-	var acct struct {
-		Plan struct {
-			Name string `json:"name"`
-		} `json:"plan"`
+// includedMinutes returns a plan's included Linux minutes: GitHub Free $12, Pro
+// and Team $18, at $0.006 a minute. Unknown plans assume Free.
+func includedMinutes(plan string) float64 {
+	switch strings.ToLower(plan) {
+	case "pro", "team":
+		return 3000
+	default:
+		return 2000
 	}
-	path := "/user"
-	if org {
-		path = "/orgs/" + owner
-	}
-	if gh.Get(path, &acct) == nil {
-		switch strings.ToLower(acct.Plan.Name) {
-		case "pro", "team":
-			return 3000
-		}
-	}
-	return 2000
 }
 
 func (a *app) pausePath() string   { return filepath.Join(a.stateDir, "paused.json") }
 func (a *app) appliedPath() string { return filepath.Join(a.stateDir, "applied.json") }
 
+// providerArg returns the provider args[0] names, if the config has it.
 func providerArg(a *app, args []string) (string, error) {
 	if len(args) == 0 {
 		return "", errors.New("name a provider: runner, blacksmith or github")
@@ -190,7 +209,7 @@ func providerArg(a *app, args []string) (string, error) {
 }
 
 func pause(args []string, now time.Time) error {
-	a, err := loadLocal()
+	a, err := load(false)
 	if err != nil {
 		return err
 	}
@@ -198,23 +217,20 @@ func pause(args []string, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	e := override.Entry{Since: now}
+	var until time.Time
 	if len(args) > 1 {
 		d, err := parseDuration(args[1])
 		if err != nil {
 			return err
 		}
-		e.Until = now.Add(d)
+		until = now.Add(d)
 	}
-	set, err := override.Load(a.pausePath())
+	set, err := pauses.Load(a.pausePath())
 	if err != nil {
 		return err
 	}
-	if set.Paused == nil {
-		set.Paused = map[string]override.Entry{}
-	}
-	set.Paused[name] = e
-	if err := override.Save(a.pausePath(), set); err != nil {
+	set[name] = until
+	if err := set.Save(a.pausePath()); err != nil {
 		return err
 	}
 	fmt.Printf("%s: %s\n", name, set.Active(now)[name])
@@ -222,7 +238,7 @@ func pause(args []string, now time.Time) error {
 }
 
 func resume(args []string) error {
-	a, err := loadLocal()
+	a, err := load(false)
 	if err != nil {
 		return err
 	}
@@ -230,35 +246,16 @@ func resume(args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := override.Load(a.pausePath())
+	set, err := pauses.Load(a.pausePath())
 	if err != nil {
 		return err
 	}
-	delete(set.Paused, name)
-	if err := override.Save(a.pausePath(), set); err != nil {
+	delete(set, name)
+	if err := set.Save(a.pausePath()); err != nil {
 		return err
 	}
 	fmt.Printf("%s: resumed\n", name)
 	return nil
-}
-
-// loadLocal reads the config without contacting GitHub, for pause and resume.
-func loadLocal() (*app, error) {
-	path, err := config.Path()
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		return nil, err
-	}
-	stateDir, err := config.StateDir()
-	if err != nil {
-		return nil, err
-	}
-	a := &app{cfg: cfg, stateDir: stateDir}
-	a.providers, a.routes = build(cfg, 0)
-	return a, nil
 }
 
 // parseDuration accepts Go durations and whole days such as 7d.
@@ -274,15 +271,4 @@ func parseDuration(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("duration %q: use for example 72h or 7d", s)
 	}
 	return d, nil
-}
-
-// flags parses args with fs, accepting flags only.
-func flags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
-	}
-	return nil
 }

@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 )
 
-// Write replaces path with raw through a temporary file in the same directory,
-// leaving it with mode perm.
-func Write(path string, raw []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// Write replaces path with raw, readable only by its owner, through a temporary
+// file in the same directory.
+func Write(path string, raw []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
@@ -18,10 +18,6 @@ func Write(path string, raw []byte, perm os.FileMode) error {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
 		tmp.Close()
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -151,4 +152,40 @@ func sameHost(a, b string) bool {
 	pa, errA := url.Parse(a)
 	pb, errB := url.Parse(b)
 	return errA == nil && errB == nil && pa.Scheme == pb.Scheme && pa.Host == pb.Host
+}
+
+// Repo is one of an owner's repositories.
+type Repo struct {
+	Name    string
+	Private bool
+}
+
+// Repos lists owner's non-archived repositories. A user owner must be the
+// token's user, since only they can list their private repositories.
+func (c *Client) Repos(owner string, org bool) ([]Repo, error) {
+	path := "/user/repos?affiliation=owner&per_page=100"
+	if org {
+		path = "/orgs/" + url.PathEscape(owner) + "/repos?type=all&per_page=100"
+	}
+	var repos []Repo
+	err := c.Paginate(path, func(body []byte) error {
+		var page []struct {
+			FullName string `json:"full_name"`
+			Archived bool   `json:"archived"`
+			Private  bool   `json:"private"`
+			Owner    struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return err
+		}
+		for _, r := range page {
+			if !r.Archived && strings.EqualFold(r.Owner.Login, owner) {
+				repos = append(repos, Repo{Name: r.FullName, Private: r.Private})
+			}
+		}
+		return nil
+	})
+	return repos, err
 }

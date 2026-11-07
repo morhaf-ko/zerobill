@@ -23,14 +23,3 @@ changelog:
 
 release:
   draft: false
-
-dockers_v2:
-  - images: ["ghcr.io/morhaf-ko/zerobill"]
-    tags: ["{{ .Version }}", "{{ if not .Prerelease }}latest{{ end }}"]
-    platforms: [linux/amd64, linux/arm64]
-    labels:
-      org.opencontainers.image.source: "{{ .GitURL }}"
-      org.opencontainers.image.version: "{{ .Version }}"
-      org.opencontainers.image.revision: "{{ .FullCommit }}"
-      org.opencontainers.image.licenses: MIT
-      org.opencontainers.image.description: Keeps GitHub Actions inside free capacity by routing jobs between self-hosted runners and free tiers.

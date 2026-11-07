@@ -8,13 +8,9 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/atomicfile"
 )
 
-// stateVersion changes whenever the cache layout does; an older cache is rebuilt.
-const stateVersion = 2
-
 // state caches this month's (UTC) completed jobs.
 type state struct {
-	Version int    `json:"version"`
-	Month   string `json:"month"`
+	Month string `json:"month"`
 	// Jobs maps a completed job id to its runner labels and wall-clock minutes,
 	// rounded up. Jobs that never reached a runner record zero minutes.
 	Jobs map[string]jobRecord `json:"jobs"`
@@ -27,10 +23,10 @@ type jobRecord struct {
 	Minutes float64  `json:"m"`
 }
 
-// loadState returns the cache for month; a missing, older or unreadable cache
-// starts empty, since every entry can be fetched again.
+// loadState returns the cache for month; a missing, other-month or unreadable
+// cache starts empty, since every entry can be fetched again.
 func loadState(path, month string) (*state, error) {
-	fresh := &state{Version: stateVersion, Month: month, Jobs: map[string]jobRecord{}, Runs: map[string]bool{}}
+	fresh := &state{Month: month, Jobs: map[string]jobRecord{}, Runs: map[string]bool{}}
 	if path == "" {
 		return fresh, nil
 	}
@@ -42,7 +38,7 @@ func loadState(path, month string) (*state, error) {
 		return nil, err
 	}
 	var s state
-	if json.Unmarshal(raw, &s) != nil || s.Version != stateVersion || s.Month != month {
+	if json.Unmarshal(raw, &s) != nil || s.Month != month {
 		return fresh, nil
 	}
 	if s.Jobs == nil {
@@ -62,5 +58,5 @@ func (s *state) save(path string) error {
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(path, raw, 0o600)
+	return atomicfile.Write(path, raw)
 }

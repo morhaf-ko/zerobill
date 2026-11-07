@@ -1,4 +1,4 @@
-package discover_test
+package discover
 
 import (
 	"encoding/base64"
@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/morhaf-ko/zerobill/internal/discover"
 	"github.com/morhaf-ko/zerobill/internal/github"
 )
 
@@ -41,7 +40,7 @@ jobs:
 `
 
 func TestParseRunsOn(t *testing.T) {
-	got, err := discover.ParseRunsOn("ci.yml", workflow)
+	got, err := parseRunsOn("ci.yml", workflow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +69,7 @@ func TestParseRunsOn(t *testing.T) {
 	if got[6].Value != "group: big" {
 		t.Errorf("group value %q", got[6].Value)
 	}
-	if _, err := discover.ParseRunsOn("bad.yml", "jobs: [unclosed"); err == nil {
+	if _, err := parseRunsOn("bad.yml", "jobs: [unclosed"); err == nil {
 		t.Error("invalid YAML parsed without an error")
 	}
 }
@@ -105,7 +104,7 @@ func TestDiscover(t *testing.T) {
 	defer srv.Close()
 	gh := github.New("t")
 	gh.BaseURL = srv.URL
-	got, err := discover.Discover(gh, "acme", true)
+	got, err := Discover(gh, "acme", true)
 	if err != nil {
 		t.Fatal(err)
 	}

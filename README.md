@@ -5,8 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Keep GitHub Actions on free runners.** zerobill runs your private-repository CI on
-your own machine when it is up, on free hosted minutes when it is not, and never on a
-paid minute.
+your own machine when it is up, and on free hosted minutes when it is not.
 
 ## Why
 
@@ -18,9 +17,10 @@ never falls back between the two:
 - A job sent to hosted runners after the free minutes are used is blocked or billed.
 - Dependency bots open pull requests at night, when your machine is off.
 
-zerobill sets one repository variable, `CI_RUNNER`, to the best free runner every few
-minutes. Your workflows read it with `runs-on: ${{ vars.CI_RUNNER }}`. Jobs already stuck
-on an offline runner are cancelled and rerun on the new one.
+zerobill does two things. Every 5 minutes it sets the repository variable `CI_RUNNER`
+to the best free runner, which your workflows read with
+`runs-on: ${{ vars.CI_RUNNER }}`. And it reruns jobs that were already stuck on your
+runner when it went down, on the new runner.
 
 ## Install
 
@@ -29,8 +29,7 @@ go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
 ```
 
 Or download a binary for Linux or macOS from the
-[latest release](https://github.com/morhaf-ko/zerobill/releases/latest), or use the image
-`ghcr.io/morhaf-ko/zerobill`.
+[latest release](https://github.com/morhaf-ko/zerobill/releases/latest).
 
 ## Quick start
 
@@ -61,14 +60,14 @@ Or download a binary for Linux or macOS from the
    zerobill run --apply
    ```
 
-   For a service that survives reboots, use [`examples/zerobill.service`](examples/zerobill.service)
-   (Linux) or [`examples/compose.yaml`](examples/compose.yaml) (Docker).
+   To keep it running across reboots on Linux, use the systemd user service in
+   [`examples/zerobill.service`](examples/zerobill.service).
 
 ## Add free capacity
 
 | | Add to the config | Then |
 | --- | --- | --- |
-| **Your own runner** | `runner: home-ci` | Install GitHub's runner with that label; see the [self-hosted runner guide](docs/homelab.md). zerobill uses it first and moves jobs away within about 15 minutes of it stopping. |
+| **Your own runner** | `runner: home-ci` | Install GitHub's runner with that label; see the [self-hosted runner guide](docs/homelab.md). zerobill uses it first and moves jobs away once it stops. |
 | **Blacksmith** | `blacksmith: true` | Install the [Blacksmith](https://www.blacksmith.sh/) GitHub app. Its 3,000 free minutes are shared with GitHub's so both last the month. |
 
 Keep dependency bots on the hosted tiers, so your machine stays free for you:
@@ -81,7 +80,7 @@ runs-on: ${{ github.actor == 'renovate[bot]' && vars.BOT_RUNNER || vars.CI_RUNNE
 
 | Command | |
 | --- | --- |
-| `zerobill status` | Free minutes, month-end projection, current choice, savings and problems |
+| `zerobill status` | Free minutes, month-end projection, current choice and problems |
 | `zerobill run [--apply]` | Keep `CI_RUNNER` and `BOT_RUNNER` on the best free runner |
 | `zerobill pause runner 7d` | Take a runner out, for example while you travel; `zerobill resume runner` brings it back |
 
@@ -93,12 +92,16 @@ stuck on a runner that is down. Nothing else.
 
 **What access does it need?** Your GitHub CLI login, plus `gh auth refresh -s admin:org`
 for an organization (or `-s user` for a personal account) to read runners and billing.
-`zerobill status` tells you when that is missing. A `GITHUB_TOKEN` works too; see the
-[reference](docs/reference.md#access).
+`zerobill status` tells you when that is missing. A `GITHUB_TOKEN` works too; see
+[security](SECURITY.md).
 
 **Can it cost me money?** It keeps 10% of every free tier in reserve and moves jobs off a
-tier before it runs out. When everything is used, jobs wait for your runner, or on
-GitHub Free, stop at the free allowance.
+tier before it runs out. When every free tier is used, jobs wait for your runner. Without
+a runner they stay on GitHub-hosted, which GitHub Free blocks at the allowance and paid
+plans bill.
+
+**Why not a scheduled workflow?** A workflow every 5 minutes on a private repository
+would itself use at least 8,640 minutes a month.
 
 **Public repositories?** They already get free hosted minutes, and GitHub
 [advises against](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security)
@@ -107,5 +110,4 @@ self-hosted runners on them, so zerobill only routes private repositories.
 ## More
 
 [Reference](docs/reference.md) · [Self-hosted runner guide](docs/homelab.md) ·
-[Design](docs/design.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) ·
-[MIT license](LICENSE)
+[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [MIT license](LICENSE)

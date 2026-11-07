@@ -159,7 +159,7 @@ func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time, checkpoint 
 	return cancelled, rerun, errors.Join(errs...)
 }
 
-// LoadState reads switch-mode state; a missing file means none.
+// LoadState reads run state; a missing file means none.
 func LoadState(path string) (State, error) {
 	var st State
 	raw, err := os.ReadFile(path)
@@ -175,11 +175,11 @@ func LoadState(path string) (State, error) {
 	return st, nil
 }
 
-// SaveState records switch-mode state.
+// SaveState records run state.
 func SaveState(path string, st State) error {
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(path, raw, 0o600)
+	return atomicfile.Write(path, raw)
 }

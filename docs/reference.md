@@ -15,16 +15,10 @@ month's jobs, the last decision per variable, and pauses.
 
 ## Access
 
-zerobill uses `GITHUB_TOKEN` when it is set, and otherwise `gh auth token`.
-
-| Need | GitHub CLI login | Fine-grained token |
-| --- | --- | --- |
-| Repositories, workflows, runs and jobs | default `gh auth login` | Repository: Contents, Actions and Metadata read |
-| Runners and billing of an organization | `gh auth refresh -s admin:org` | Organization: Self-hosted runners and Administration read |
-| Runners and billing of a personal account | `gh auth refresh -s user` | Repository: Administration read; Account: Plan read |
-| `run --apply` | default `gh auth login` | Repository: Actions and Variables write |
-
-Give a fine-grained token access to all repositories: minutes are summed across them.
+zerobill uses `GITHUB_TOKEN` when it is set, and otherwise the GitHub CLI login
+(`gh auth token`). Reading runners and billing needs `gh auth refresh -s admin:org` for
+an organization, or `-s user` for a personal account. A personal account must be the
+signed-in user. For a narrower token, see [security](../SECURITY.md).
 
 ## Conventions
 
@@ -37,7 +31,7 @@ Give a fine-grained token access to all repositories: minutes are summed across 
 | Reserve | 10% of each free tier is never used |
 | Sharing | Among usable free tiers, the one with the smallest share used, so all last the month |
 | Nothing free | Jobs wait for your runner, or use GitHub-hosted without one |
-| Interval | Every 5 minutes (`run --interval`) |
+| Interval | Every 5 minutes |
 
 ## How a runner counts as down
 
@@ -68,24 +62,7 @@ Without `--apply`, `run` logs the same decisions as JSON lines and writes nothin
 
 ## Running it as a service
 
-- Linux: [`examples/zerobill.service`](../examples/zerobill.service), a systemd user
-  service that uses your GitHub CLI login.
-- Docker: [`examples/compose.yaml`](../examples/compose.yaml). The image reads
-  `/etc/zerobill/config.yaml` and keeps state in `/var/lib/zerobill`; pass
-  `GITHUB_TOKEN=$(gh auth token)`.
-- macOS: a launchd agent running `zerobill run --apply`.
-
-Run it on a different machine than your runner when you can, so a power cut there does
-not stop zerobill as well.
-
-## Verify a download
-
-Each release publishes `checksums.txt` and a GitHub build attestation:
-
-```sh
-shasum -a 256 --ignore-missing -c checksums.txt
-gh attestation verify zerobill_<version>_<os>_<arch>.tar.gz --repo morhaf-ko/zerobill \
-  --signer-workflow morhaf-ko/zerobill/.github/workflows/release.yml
-gh attestation verify oci://ghcr.io/morhaf-ko/zerobill:<version> --repo morhaf-ko/zerobill \
-  --signer-workflow morhaf-ko/zerobill/.github/workflows/release.yml
-```
+On Linux, [`examples/zerobill.service`](../examples/zerobill.service) is a systemd user
+service that uses your GitHub CLI login. On macOS, run `zerobill run --apply` from a
+launchd agent. Run it on a different machine than your runner when you can, so a power
+cut there does not stop zerobill as well.

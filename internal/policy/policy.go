@@ -18,9 +18,6 @@ const (
 	// ReservePercent of a free tier is kept back so a job never starts on a tier
 	// that runs dry mid-job.
 	ReservePercent = 10
-	// GitHubMinuteUSD is GitHub's Linux 2-core hosted minute, which a minute on a
-	// self-hosted runner would otherwise cost.
-	GitHubMinuteUSD = 0.006
 )
 
 // Kind distinguishes hardware you own from providers that meter minutes.
@@ -46,11 +43,8 @@ func (p Provider) Limit() float64 { return p.Monthly * (100 - ReservePercent) / 
 // State is what collectors observed about one provider, plus what the
 // controller remembers.
 type State struct {
-	// Online is set when a registered runner with the label is online;
-	// Registered when any runner carries the label.
 	Online, Registered bool
-	// UsedMinutes is billed minutes this month for a metered provider and minutes
-	// served for a self-hosted one.
+	// UsedMinutes is a metered provider's billed minutes this month.
 	UsedMinutes  float64
 	OldestQueued time.Duration
 	// Stalled is set within RetryAfter of a queue stall with no runner online.
@@ -64,7 +58,6 @@ type Decision struct {
 	Provider string
 	Label    string
 	Reason   string
-	Fallback bool
 }
 
 // Usable reports whether p can take jobs in state s and why.
@@ -120,7 +113,7 @@ func Decide(rt Route, states map[string]State) Decision {
 		}
 		return Decision{Provider: p.Name, Label: p.Label, Reason: reason(why, skipped)}
 	}
-	return Decision{Provider: rt.Fallback.Name, Label: rt.Fallback.Label, Reason: reason("no free capacity, jobs wait", skipped), Fallback: true}
+	return Decision{Provider: rt.Fallback.Name, Label: rt.Fallback.Label, Reason: reason(fallbackReason(rt.Fallback), skipped)}
 }
 
 func paced(providers []Provider, states map[string]State) (Provider, string) {
@@ -145,6 +138,13 @@ func paced(providers []Provider, states map[string]State) (Provider, string) {
 		return best, fmt.Sprintf("%.0f free minutes left", best.Limit()-states[best.Name].UsedMinutes)
 	}
 	return best, "least used free tier: " + strings.Join(shares, ", ")
+}
+
+func fallbackReason(p Provider) string {
+	if p.Kind == SelfHosted {
+		return "no free capacity, jobs wait for your runner"
+	}
+	return "no free capacity, GitHub-hosted jobs may be blocked or billed"
 }
 
 func reason(chosen string, skipped []string) string {
@@ -183,15 +183,4 @@ func Hold(d Decision, applied Applied, rt Route, states map[string]State, now ti
 		return d, false
 	}
 	return d, false
-}
-
-// Saved estimates what this month's self-hosted minutes would cost on GitHub.
-func Saved(providers []Provider, states map[string]State) float64 {
-	var minutes float64
-	for _, p := range providers {
-		if p.Kind == SelfHosted {
-			minutes += states[p.Name].UsedMinutes
-		}
-	}
-	return minutes * GitHubMinuteUSD
 }

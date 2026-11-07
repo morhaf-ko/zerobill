@@ -42,22 +42,21 @@ func TestUsable(t *testing.T) {
 
 func TestDecide(t *testing.T) {
 	tests := []struct {
-		name     string
-		states   map[string]State
-		want     string
-		fallback bool
-		reason   string
+		name   string
+		states map[string]State
+		want   string
+		reason string
 	}{
-		{"runner first", map[string]State{"runner": {Online: true}, "blacksmith": {}, "github": {}}, "runner", false, "online"},
-		{"least used free tier", map[string]State{"runner": {Registered: true}, "blacksmith": {UsedMinutes: 900}, "github": {UsedMinutes: 700}}, "blacksmith", false, "blacksmith 33%, github 39%"},
-		{"tier at reserve is skipped", map[string]State{"runner": {Registered: true}, "blacksmith": {UsedMinutes: 2700}, "github": {UsedMinutes: 100}}, "github", false, "1700 free minutes left"},
-		{"nothing free waits on the runner", map[string]State{"runner": {Registered: true}, "blacksmith": {UsedMinutes: 2700}, "github": {UsedMinutes: 1800}}, "runner", true, "jobs wait"},
-		{"unobserved provider is skipped", map[string]State{"github": {}}, "github", false, "runner: not observed"},
+		{"runner first", map[string]State{"runner": {Online: true}, "blacksmith": {}, "github": {}}, "runner", "online"},
+		{"least used free tier", map[string]State{"runner": {Registered: true}, "blacksmith": {UsedMinutes: 900}, "github": {UsedMinutes: 700}}, "blacksmith", "blacksmith 33%, github 39%"},
+		{"tier at reserve is skipped", map[string]State{"runner": {Registered: true}, "blacksmith": {UsedMinutes: 2700}, "github": {UsedMinutes: 100}}, "github", "1700 free minutes left"},
+		{"nothing free waits on the runner", map[string]State{"runner": {Registered: true}, "blacksmith": {UsedMinutes: 2700}, "github": {UsedMinutes: 1800}}, "runner", "jobs wait for your runner"},
+		{"unobserved provider is skipped", map[string]State{"github": {}}, "github", "runner: not observed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Decide(ci, tt.states)
-			if got.Provider != tt.want || got.Fallback != tt.fallback || !strings.Contains(got.Reason, tt.reason) {
+			if got.Provider != tt.want || !strings.Contains(got.Reason, tt.reason) {
 				t.Fatalf("got %+v", got)
 			}
 		})
@@ -87,11 +86,5 @@ func TestHold(t *testing.T) {
 				t.Fatalf("got %s held=%v (%s)", got.Provider, held, got.Reason)
 			}
 		})
-	}
-}
-
-func TestSaved(t *testing.T) {
-	if got := Saved(ci.Providers, map[string]State{"runner": {UsedMinutes: 500}, "github": {UsedMinutes: 900}}); got != 3 {
-		t.Fatalf("got %v, want 3", got)
 	}
 }

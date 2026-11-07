@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -10,20 +9,20 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/morhaf-ko/zerobill/internal/apply"
 	"github.com/morhaf-ko/zerobill/internal/discover"
 	"github.com/morhaf-ko/zerobill/internal/policy"
 )
 
 func status(args []string) error {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	if err := flags(fs, args); err != nil {
-		return err
+	if len(args) > 0 {
+		return fmt.Errorf("unknown argument %q; status takes none", args[0])
 	}
-	a, err := load()
+	a, err := load(true)
 	if err != nil {
 		return err
 	}
-	c, err := newController(a, false)
+	st, err := apply.LoadState(a.appliedPath())
 	if err != nil {
 		return err
 	}
@@ -31,23 +30,18 @@ func status(args []string) error {
 	if err != nil {
 		return fmt.Errorf("list private repositories: %w", err)
 	}
-	c.repos = found.Repos
 	a.col.Repositories = names(found.Repos)
+	if _, err := os.Stat(a.col.StatePath); a.cfg.Blacksmith && err != nil {
+		fmt.Fprintln(os.Stderr, "Counting this month's Blacksmith minutes from every job; the first run can take a few minutes.")
+	}
 	now := time.Now().UTC()
 	r := a.col.Observe(a.providers)
-	errs := map[string]string{}
-	for k, v := range r.Errors {
-		errs[k] = v
-	}
-	states := c.adjust(now, r.States, errs)
-	for k, v := range r.Warnings {
-		errs[k] = v
-	}
-	return render(os.Stdout, now, a, c.state.Routes, states, found, errs)
+	states := adjust(a, &st, now, r.States, r.Errors)
+	return render(os.Stdout, now, a, st.Routes, states, found, r.Errors)
 }
 
-// render prints each provider's budget, each variable's choice, the savings
-// estimate and anything that stops zerobill from routing.
+// render prints each provider's budget, each variable's choice and anything that
+// stops zerobill from routing.
 func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applied, states map[string]policy.State, found discover.Result, errs map[string]string) error {
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	elapsed := now.Sub(start)
@@ -64,7 +58,7 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 		}
 		_, why := policy.Usable(p, s)
 		if p.Kind == policy.SelfHosted {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%.0f min\t-\t-\n", p.Name, p.Label, why, s.UsedMinutes)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\n", p.Name, p.Label, why)
 			continue
 		}
 		pace := "-"
@@ -92,9 +86,6 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 		return err
 	}
 	fmt.Fprintf(w, "\nRepositories: %d read CI_RUNNER or BOT_RUNNER.\n", len(found.Repos))
-	if saved := policy.Saved(a.providers, states); saved > 0 {
-		fmt.Fprintf(w, "Saved this month: about $%.2f, your runner's minutes at GitHub's price.\n", saved)
-	}
 
 	var problems []string
 	keys := make([]string, 0, len(errs))
@@ -115,7 +106,11 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 	if len(found.Repos) == 0 {
 		problems = append(problems, "no private repository reads vars.CI_RUNNER yet; set runs-on: ${{ vars.CI_RUNNER }} in your workflows")
 	}
-	for _, f := range found.Fixed {
+	for i, f := range found.Fixed {
+		if i == maxFixed {
+			problems = append(problems, fmt.Sprintf("and %d more jobs with a fixed runner", len(found.Fixed)-maxFixed))
+			break
+		}
 		problems = append(problems, "fixed runner, change to ${{ vars.CI_RUNNER }}: "+f)
 	}
 	for _, e := range found.Errors {
@@ -126,3 +121,7 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 	}
 	return nil
 }
+
+// maxFixed caps the fixed-runner lines, so a large organization's first status
+// stays readable.
+const maxFixed = 10

@@ -8,7 +8,8 @@ run your CI for free. It needs only outbound HTTPS; GitHub never connects to it.
 Use GitHub's own runner, so no third-party code holds your registration token.
 
 1. Open **Settings → Actions → Runners → New self-hosted runner** on your organization,
-   or on a repository for a personal account.
+   or on a repository for a personal account. In an organization, register it there and
+   not on one repository, so zerobill sees whether it is online.
 2. Run the commands GitHub shows, adding a label for zerobill:
 
    ```sh

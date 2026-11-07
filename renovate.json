@@ -50,13 +50,6 @@
       "labels": [
         "breaking-change"
       ]
-    },
-    {
-      "description": "Examples show a readable version tag for users to copy",
-      "matchFileNames": [
-        "examples/**"
-      ],
-      "pinDigests": false
     }
   ],
   "customManagers": [
