@@ -20,6 +20,9 @@ func TestLoadExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c.Mode != DryRun || c.Hold() != DefaultMinHold {
+		t.Fatalf("unexpected defaults: %s %s", c.Mode, c.Hold())
+	}
 	if providers[0].MaxQueueWait != 10*time.Minute || providers[1].Multiplier != 1 {
 		t.Fatalf("unexpected providers: %+v", providers)
 	}
@@ -35,6 +38,9 @@ func TestLoadExample(t *testing.T) {
 func TestLoadRejects(t *testing.T) {
 	tests := map[string]string{
 		"live mode":        "mode: live\nfallback: a\nproviders: [{name: a, label: x, kind: self-hosted}]",
+		"bad min_hold":     "min_hold: soon\nfallback: a\nproviders: [{name: a, label: x, kind: self-hosted}]",
+		"switch no repos":  "mode: switch\nvariables: [CI_RUNNER]\nfallback: a\nproviders: [{name: a, label: x, kind: self-hosted}]",
+		"switch bad repo":  "mode: switch\nrepositories: [app]\nvariables: [CI_RUNNER]\nfallback: a\nproviders: [{name: a, label: x, kind: self-hosted}]",
 		"unknown fallback": "fallback: b\nproviders: [{name: a, label: x, kind: self-hosted}]",
 		"metered budget":   "fallback: a\nproviders: [{name: a, label: x, kind: metered}]",
 		"duplicate":        "fallback: a\nproviders: [{name: a, label: x, kind: self-hosted}, {name: a, label: y, kind: self-hosted}]",

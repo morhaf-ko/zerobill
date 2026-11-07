@@ -1,5 +1,9 @@
 # Providers are tried in order. Self-hosted hardware first, metered free tiers after.
+# dry-run only logs decisions; switch lets watch write the variables below.
 mode: dry-run
+# A label stays at least this long before moving back to a higher-priority provider.
+# Moving off a provider that went offline or ran out of free minutes is immediate.
+min_hold: 15m
 # Live collectors read runners, billing and repositories of this organization or user.
 owner: your-org
 repositories:
