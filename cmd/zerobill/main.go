@@ -21,7 +21,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// version is set at release build time.
+var version = "dev"
+
 const usage = `usage:
+  zerobill version
   zerobill plan --config zerobill.yaml --observed observed.yaml
   zerobill observe --config zerobill.yaml [--state zerobill-state.json] [--out observed.yaml]
   zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--applied zerobill-applied.json] [--interval 5m] [--count 0]
@@ -37,6 +41,9 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "version", "--version":
+		fmt.Println(version)
+		return
 	case "plan":
 		err = plan(os.Args[2:])
 	case "observe":
