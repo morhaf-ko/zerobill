@@ -5,6 +5,7 @@ package notify
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -15,12 +16,17 @@ import (
 var client = &http.Client{Timeout: 10 * time.Second}
 
 // Send posts text to target. Discord and Slack webhooks get their JSON shape;
-// anything else, such as an ntfy topic, gets plain text.
+// anything else, such as an ntfy topic, gets plain text. Errors never contain
+// the URL, whose path is often the webhook's secret.
 func Send(target, text string) error {
-	contentType, body := Body(target, text)
-	resp, err := client.Post(target, contentType, bytes.NewReader(body))
+	contentType, b := body(target, text)
+	resp, err := client.Post(target, contentType, bytes.NewReader(b))
 	if err != nil {
-		return fmt.Errorf("notify: %w", redact(err, target))
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return fmt.Errorf("notify: %w", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode >= 300 {
@@ -29,12 +35,11 @@ func Send(target, text string) error {
 	return nil
 }
 
-// Body returns the content type and body Send posts to target.
-func Body(target, text string) (string, []byte) {
+func body(target, text string) (string, []byte) {
 	field := ""
 	if u, err := url.Parse(target); err == nil {
 		switch host := strings.ToLower(u.Hostname()); {
-		case host == "discord.com" || host == "discordapp.com":
+		case host == "discord.com" || host == "discordapp.com" || strings.HasSuffix(host, ".discord.com"):
 			field = "content"
 		case host == "hooks.slack.com":
 			field = "text"
@@ -45,12 +50,4 @@ func Body(target, text string) (string, []byte) {
 	}
 	raw, _ := json.Marshal(map[string]string{field: text})
 	return "application/json", raw
-}
-
-// redact keeps a webhook's secret path out of logs.
-func redact(err error, target string) error {
-	if u, perr := url.Parse(target); perr == nil {
-		return fmt.Errorf("%s", strings.ReplaceAll(err.Error(), target, u.Scheme+"://"+u.Host))
-	}
-	return err
 }

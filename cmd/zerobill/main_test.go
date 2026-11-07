@@ -191,6 +191,38 @@ func TestNotifiesOnlyWhenTheChoiceChanges(t *testing.T) {
 	}
 }
 
+func TestApplyNotifiesOnlyWhatItWrote(t *testing.T) {
+	var got []string
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, string(b))
+	}))
+	defer hook.Close()
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
+	defer denied.Close()
+
+	c, _ := newTestController(t, true)
+	c.a.cfg.Notify = hook.URL + "/topic"
+	c.writer.GH.BaseURL = denied.URL
+	l := step(t, c, 0, result(policy.State{Online: true, Registered: true}))
+	if len(got) != 0 || l.Errors == nil {
+		t.Fatalf("notified %q although every write failed: %+v", got, l.Errors)
+	}
+
+	c, _ = newTestController(t, true)
+	c.a.cfg.Notify = hook.URL + "/topic"
+	step(t, c, 0, result(policy.State{Online: true, Registered: true}))
+	if len(got) != 1 || strings.HasSuffix(got[0], "[log only]") {
+		t.Fatalf("messages %q", got)
+	}
+
+	c.a.cfg.Notify = denied.URL + "/secret-hook"
+	l = step(t, c, 20*time.Minute, result(policy.State{Registered: true}))
+	if l.Errors["notify"] == "" || strings.Contains(l.Errors["notify"], "secret-hook") {
+		t.Fatalf("notify error %q", l.Errors["notify"])
+	}
+}
+
 func TestRender(t *testing.T) {
 	a := &app{cfg: &config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}}
 	a.providers, a.routes = build(a.cfg, 2000)
