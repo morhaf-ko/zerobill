@@ -164,7 +164,8 @@ type job struct {
 	RunnerName string `json:"runner_name"`
 }
 
-// SelfHosted reports a label online when any runner carrying it is online, and
+// SelfHosted reports a label registered when any runner carries it and online
+// when one of those is online, and
 // the age of the oldest queued job targeting it in the configured repositories.
 // It also returns the runs that can move off the label: every queued job is on
 // it, no job has started, and no completed job failed or was cancelled, so a
@@ -191,8 +192,9 @@ func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
 				return err
 			}
 			for _, r := range page.Runners {
-				if r.Status == "online" && slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return l.Name == label }) {
-					s.Online = true
+				if slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return l.Name == label }) {
+					s.Registered = true
+					s.Online = s.Online || r.Status == "online"
 				}
 			}
 			return nil
@@ -346,15 +348,6 @@ func (u *usage) onLabel(label string) float64 {
 		}
 	}
 	return total
-}
-
-// Blacksmith estimates this month's billed Blacksmith minutes.
-func (c *Collector) Blacksmith() (policy.State, error) {
-	u, err := c.monthUsage()
-	if err != nil {
-		return policy.State{}, err
-	}
-	return policy.State{Online: true, UsedMinutes: u.blacksmith()}, nil
 }
 
 // monthUsage reads the jobs of runs created this month in every repository the

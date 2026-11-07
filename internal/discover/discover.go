@@ -1,6 +1,6 @@
-// Package setup reads an owner's repositories, workflows, runners and variables
-// so zerobill can write a starting config and check an existing one.
-package setup
+// Package discover finds the private repositories whose workflows read
+// zerobill's runner variables, and the jobs still pinned to a fixed label.
+package discover
 
 import (
 	"encoding/base64"
@@ -151,96 +151,6 @@ func escapePath(p string) string {
 	return strings.Join(parts, "/")
 }
 
-// Variables returns a repository's Actions variables by name.
-func Variables(gh *github.Client, repo string) (map[string]string, error) {
-	out := map[string]string{}
-	err := gh.Paginate("/repos/"+repo+"/actions/variables?per_page=30", func(body []byte) error {
-		var page struct {
-			Variables []struct{ Name, Value string } `json:"variables"`
-		}
-		if err := json.Unmarshal(body, &page); err != nil {
-			return err
-		}
-		for _, v := range page.Variables {
-			out[v.Name] = v.Value
-		}
-		return nil
-	})
-	return out, err
-}
-
-// Runner is a registered self-hosted runner.
-type Runner struct {
-	Online bool
-	// All holds every label as GitHub reports it; Labels leaves out GitHub's
-	// defaults such as self-hosted, Linux and X64 and key=value metadata labels.
-	All    []string
-	Labels []string
-	// Managed is set for runners a manager creates per job, recognised by GARM's
-	// runner-pool-id metadata label.
-	Managed bool
-}
-
-// defaultLabels are the labels GitHub adds to every self-hosted runner.
-var defaultLabels = []string{"self-hosted", "linux", "windows", "macos", "x64", "arm", "arm64"}
-
-// IsDefaultLabel reports whether label is one GitHub adds to every self-hosted
-// runner, or key=value metadata, so it cannot name one pool.
-func IsDefaultLabel(label string) bool {
-	return strings.Contains(label, "=") || slices.Contains(defaultLabels, strings.ToLower(label))
-}
-
-// Runners lists self-hosted runners at paths, organization or repository level.
-func Runners(gh *github.Client, paths []string) ([]Runner, error) {
-	var out []Runner
-	for _, p := range paths {
-		err := gh.Paginate(p, func(body []byte) error {
-			var page struct {
-				Runners []struct {
-					Status string `json:"status"`
-					Labels []struct {
-						Name string `json:"name"`
-					} `json:"labels"`
-				} `json:"runners"`
-			}
-			if err := json.Unmarshal(body, &page); err != nil {
-				return err
-			}
-			for _, r := range page.Runners {
-				rr := Runner{Online: r.Status == "online"}
-				for _, l := range r.Labels {
-					rr.All = append(rr.All, l.Name)
-					switch {
-					case strings.HasPrefix(l.Name, "runner-pool-id="):
-						rr.Managed = true
-					case !IsDefaultLabel(l.Name):
-						rr.Labels = append(rr.Labels, l.Name)
-					}
-				}
-				out = append(out, rr)
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-// RunnerPaths returns where an owner's runners are listed: once for an
-// organization, per repository for a user.
-func RunnerPaths(owner string, org bool, repos []string) []string {
-	if org {
-		return []string{"/orgs/" + url.PathEscape(owner) + "/actions/runners?per_page=100"}
-	}
-	paths := make([]string, len(repos))
-	for i, r := range repos {
-		paths[i] = "/repos/" + r + "/actions/runners?per_page=100"
-	}
-	return paths
-}
-
 // PrivateRepos lists the owner's private, non-archived repositories, sorted.
 // A user owner must be the token's user.
 func PrivateRepos(gh *github.Client, owner string, org bool) ([]string, error) {
@@ -270,4 +180,57 @@ func PrivateRepos(gh *github.Client, owner string, org bool) ([]string, error) {
 	})
 	sort.Strings(repos)
 	return repos, err
+}
+
+// Variables zerobill sets: CI_RUNNER for everyone's jobs, BOT_RUNNER for checks
+// dependency bots trigger.
+var Variables = []string{"CI_RUNNER", "BOT_RUNNER"}
+
+// Repo is a repository whose workflows read zerobill's variables.
+type Repo struct {
+	Name string
+	// Vars are the zerobill variables its workflows read.
+	Vars []string
+}
+
+// Result is what Discover found.
+type Result struct {
+	Repos []Repo
+	// Fixed are runs-on declarations pinned to a literal label, which zerobill
+	// cannot route, as "owner/name path:line: value".
+	Fixed []string
+	// Errors are repositories whose workflows could not be read.
+	Errors []string
+}
+
+// Discover scans the owner's private repositories.
+func Discover(gh *github.Client, owner string, org bool) (Result, error) {
+	var r Result
+	names, err := PrivateRepos(gh, owner, org)
+	if err != nil {
+		return r, err
+	}
+	for _, name := range names {
+		decls, err := Workflows(gh, name)
+		if err != nil {
+			r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		var vars []string
+		for _, d := range decls {
+			for _, v := range d.Vars {
+				if slices.Contains(Variables, v) && !slices.Contains(vars, v) {
+					vars = append(vars, v)
+				}
+			}
+			if len(d.Vars) == 0 && len(d.Labels) > 0 {
+				r.Fixed = append(r.Fixed, fmt.Sprintf("%s %s:%d: %s", name, d.Path, d.Line, d.Value))
+			}
+		}
+		if len(vars) > 0 {
+			slices.Sort(vars)
+			r.Repos = append(r.Repos, Repo{Name: name, Vars: vars})
+		}
+	}
+	return r, nil
 }

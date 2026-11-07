@@ -6,7 +6,7 @@ FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266
 ARG TARGETPLATFORM
 COPY --from=dirs --chown=65532:65532 /var/lib/zerobill /var/lib/zerobill
 COPY $TARGETPLATFORM/zerobill /usr/bin/zerobill
-# Default flag paths resolve here: mount the config as zerobill.yaml and keep state on a volume.
-WORKDIR /var/lib/zerobill
+# Mount the config at /etc/zerobill/config.yaml and keep /var/lib/zerobill on a volume.
+ENV XDG_CONFIG_HOME=/etc XDG_STATE_HOME=/var/lib
 ENTRYPOINT ["/usr/bin/zerobill"]
-CMD ["watch"]
+CMD ["run"]

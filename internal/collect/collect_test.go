@@ -201,12 +201,12 @@ func TestBlacksmithCachesCompletedJobs(t *testing.T) {
 	c.StatePath = filepath.Join(t.TempDir(), "new", "state.json")
 	// 61s on 2 vCPU bills 2, 3m on 4 vCPU bills 6, 5m bills 5, 90s running bills 2.
 	for i := 0; i < 2; i++ {
-		s, err := c.Blacksmith()
+		s, err := c.monthUsage()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if s.UsedMinutes != 15 {
-			t.Fatalf("pass %d: got %v minutes, want 15", i, s.UsedMinutes)
+		if s.blacksmith() != 15 {
+			t.Fatalf("pass %d: got %v minutes, want 15", i, s.blacksmith())
 		}
 	}
 	if n := f.hits["/repos/acme/app/actions/runs/1/jobs"]; n != 1 {
@@ -310,7 +310,7 @@ func TestBlacksmithSplitsMonthOverSearchCap(t *testing.T) {
 		days = append(days, created)
 		fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
 	}
-	if _, err := f.collector("acme").Blacksmith(); err != nil {
+	if _, err := f.collector("acme").monthUsage(); err != nil {
 		t.Fatal(err)
 	}
 	if len(days) != 7 || days[0] != "2026-11-01" || days[6] != "2026-11-07" {
@@ -325,7 +325,7 @@ func TestBlacksmithUserOwnerNeedsOwnToken(t *testing.T) {
 	f := newFake(t)
 	f.json("/users/octo", `{"type":"User"}`)
 	f.json("/user", `{"login":"someone-else"}`)
-	if _, err := f.collector("octo").Blacksmith(); err == nil || !strings.Contains(err.Error(), "needs a token") {
+	if _, err := f.collector("octo").monthUsage(); err == nil || !strings.Contains(err.Error(), "needs a token") {
 		t.Fatalf("expected a token owner error, got %v", err)
 	}
 }

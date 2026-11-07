@@ -1,4 +1,4 @@
-// Package override stores operator decisions that take providers out of rotation.
+// Package override stores pauses that take providers out of rotation.
 package override
 
 import (
@@ -11,12 +11,12 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/atomicfile"
 )
 
-// Set maps provider names to their disable entries.
+// Set maps provider names to their pauses.
 type Set struct {
-	Disabled map[string]Entry `json:"disabled,omitempty"`
+	Paused map[string]Entry `json:"paused,omitempty"`
 }
 
-// Entry disables a provider until Until; a zero Until disables it until enabled.
+// Entry pauses a provider until Until; a zero Until pauses it until resumed.
 type Entry struct {
 	Until time.Time `json:"until,omitzero"`
 	Since time.Time `json:"since"`
@@ -49,15 +49,15 @@ func Save(path string, s Set) error {
 	return atomicfile.Write(path, append(raw, '\n'), 0o644)
 }
 
-// Active returns the reason each provider is disabled at now.
+// Active returns the reason each provider is paused at now.
 func (s Set) Active(now time.Time) map[string]string {
 	out := map[string]string{}
-	for name, e := range s.Disabled {
+	for name, e := range s.Paused {
 		switch {
 		case e.Until.IsZero():
-			out[name] = "disabled by operator"
+			out[name] = "paused"
 		case now.Before(e.Until):
-			out[name] = "disabled by operator until " + e.Until.UTC().Format(time.RFC3339)
+			out[name] = "paused until " + e.Until.UTC().Format(time.RFC3339)
 		}
 	}
 	return out

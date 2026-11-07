@@ -12,7 +12,7 @@ func TestActive(t *testing.T) {
 	if s, err := Load(path); err != nil || len(s.Active(now)) != 0 {
 		t.Fatalf("missing file: %+v %v", s, err)
 	}
-	want := Set{Disabled: map[string]Entry{
+	want := Set{Paused: map[string]Entry{
 		"home":   {Since: now},
 		"github": {Since: now, Until: now.Add(time.Hour)},
 		"old":    {Since: now.Add(-2 * time.Hour), Until: now.Add(-time.Hour)},
@@ -25,7 +25,7 @@ func TestActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	active := got.Active(now)
-	if len(active) != 2 || active["home"] != "disabled by operator" || active["github"] != "disabled by operator until 2026-11-07T13:00:00Z" {
+	if len(active) != 2 || active["home"] != "paused" || active["github"] != "paused until 2026-11-07T13:00:00Z" {
 		t.Fatalf("active %v", active)
 	}
 }

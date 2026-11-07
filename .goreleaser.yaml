@@ -13,7 +13,7 @@ builds:
 
 archives:
   - formats: [tar.gz]
-    files: [LICENSE, README.md, examples/zerobill.yaml]
+    files: [LICENSE, README.md, examples/config.yaml]
 
 checksum:
   name_template: checksums.txt

@@ -3,9 +3,24 @@ package policy
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 	"time"
+)
+
+// Conventions every user shares.
+const (
+	// MaxQueueWait marks a self-hosted runner down when a job has waited longer.
+	MaxQueueWait = 10 * time.Minute
+	// RetryAfter is how long a queue stall keeps a runner down unless one comes online.
+	RetryAfter = time.Hour
+	// MinHold is how long an applied label stays while it is still usable.
+	MinHold = 15 * time.Minute
+	// ReservePercent of a free tier is kept back so a job never starts on a tier
+	// that runs dry mid-job.
+	ReservePercent = 10
+	// GitHubMinuteUSD is GitHub's Linux 2-core hosted minute, which a minute on a
+	// self-hosted runner would otherwise cost.
+	GitHubMinuteUSD = 0.006
 )
 
 // Kind distinguishes hardware you own from providers that meter minutes.
@@ -16,37 +31,32 @@ const (
 	Metered    Kind = "metered"
 )
 
-// Provider is one place jobs can run, in priority order.
+// Provider is one place jobs can run.
 type Provider struct {
 	Name  string
 	Label string
 	Kind  Kind
-	// MonthlyMinutes and ReserveMinutes apply to metered providers. The reserve is
-	// kept back so a switch never lands on a provider that runs dry mid-job.
-	MonthlyMinutes float64
-	ReserveMinutes float64
-	// MaxQueueWait marks a self-hosted provider saturated when its oldest queued job
-	// has waited longer. Zero disables the check.
-	MaxQueueWait time.Duration
-	// OnDemand marks a self-hosted provider whose runners are created per job, such
-	// as GARM or Actions Runner Controller pools, so no registered runner is not a
-	// sign of an outage. Only a queue stall marks it unusable.
-	OnDemand bool
-	// RetryAfter is how long an on-demand provider stays unusable after a queue
-	// stall unless a runner with its label comes online.
-	RetryAfter time.Duration
+	// Monthly is a metered provider's free minutes a month.
+	Monthly float64
 }
 
-// State is what collectors observed about one provider, plus what the controller
-// remembers about it.
+// Limit is the metered minutes usable before the reserve.
+func (p Provider) Limit() float64 { return p.Monthly * (100 - ReservePercent) / 100 }
+
+// State is what collectors observed about one provider, plus what the
+// controller remembers.
 type State struct {
-	Online       bool
+	// Online is set when a registered runner with the label is online;
+	// Registered when any runner carries the label.
+	Online, Registered bool
+	// UsedMinutes is billed minutes this month for a metered provider and minutes
+	// served for a self-hosted one.
 	UsedMinutes  float64
 	OldestQueued time.Duration
-	// Stalled is set while an on-demand provider is inside RetryAfter of a queue stall.
+	// Stalled is set within RetryAfter of a queue stall with no runner online.
 	Stalled bool
-	// Disabled holds the operator's reason for taking the provider out of rotation.
-	Disabled string
+	// Paused holds why the user took the provider out of rotation.
+	Paused string
 }
 
 // Decision is the label to write and why.
@@ -57,108 +67,62 @@ type Decision struct {
 	Fallback bool
 }
 
-// GitHubMinuteUSD is GitHub's price for a Linux 2-core hosted minute, which a
-// minute served by a self-hosted runner would otherwise cost.
-const GitHubMinuteUSD = 0.006
-
-// Saved estimates what this month's self-hosted minutes would cost on
-// GitHub-hosted runners.
-func Saved(providers []Provider, states map[string]State) float64 {
-	var minutes float64
-	for _, p := range providers {
-		if p.Kind == SelfHosted {
-			minutes += states[p.Name].UsedMinutes
-		}
-	}
-	return minutes * GitHubMinuteUSD
-}
-
-// Remaining returns billed minutes left before the reserve.
-func (p Provider) Remaining(s State) float64 {
-	return p.MonthlyMinutes - s.UsedMinutes - p.ReserveMinutes
-}
-
 // Usable reports whether p can take jobs in state s and why.
-func Usable(p Provider, s State) (bool, string, error) {
-	if s.Disabled != "" {
-		return false, s.Disabled, nil
-	}
-	switch p.Kind {
-	case SelfHosted:
-		if p.MaxQueueWait > 0 && s.OldestQueued > p.MaxQueueWait {
-			return false, fmt.Sprintf("queue waited %s", s.OldestQueued.Round(time.Second)), nil
-		}
-		if s.Online {
-			return true, "online", nil
-		}
-		if !p.OnDemand {
-			return false, "offline", nil
-		}
-		if s.Stalled {
-			return false, "no runner since a queue stall", nil
-		}
-		return true, "on demand, no queue stall", nil
-	case Metered:
-		left := p.Remaining(s)
+func Usable(p Provider, s State) (bool, string) {
+	switch {
+	case s.Paused != "":
+		return false, s.Paused
+	case p.Kind == Metered:
+		left := p.Limit() - s.UsedMinutes
 		if left <= 0 {
-			return false, "free minutes at reserve", nil
+			return false, "free minutes at reserve"
 		}
-		return true, fmt.Sprintf("%.0f free minutes above reserve", left), nil
+		return true, fmt.Sprintf("%.0f free minutes left", left)
+	case s.OldestQueued > MaxQueueWait:
+		return false, fmt.Sprintf("a job waited %s", s.OldestQueued.Round(time.Second))
+	case s.Online:
+		return true, "online"
+	case s.Stalled:
+		return false, "no runner since a job stalled"
+	case s.Registered:
+		return false, "offline"
 	default:
-		return false, "", fmt.Errorf("provider %s: unknown kind %q", p.Name, p.Kind)
+		return true, "no runner registered; expecting runners per job"
 	}
 }
 
-// Balance chooses between usable metered providers of a route.
-type Balance string
-
-const (
-	// Order takes the first usable provider.
-	Order Balance = "order"
-	// Pace takes, among the usable metered providers, the one that has used the
-	// smallest share of its minutes above the reserve, so all of them last the month.
-	Pace Balance = "pace"
-)
-
-// Route is one set of variables and the providers that may serve them, in priority order.
+// Route is one repository variable and the providers that may serve it, in order.
 type Route struct {
-	Name      string
-	Variables []string
+	Variable  string
 	Providers []Provider
-	// Fallback is chosen when no provider is usable, so jobs queue instead of
-	// spending money. It need not be one of Providers.
+	// Fallback is chosen when nothing is usable, so jobs queue instead of costing money.
 	Fallback Provider
-	Balance  Balance
 }
 
-// Decide returns the first usable provider of the route, balanced by its Balance.
-// When none is usable it returns the route's fallback.
-func Decide(rt Route, states map[string]State) (Decision, error) {
+// Decide returns the first usable provider of the route. Among usable metered
+// providers it takes the one with the smallest share of its limit used, so every
+// free tier lasts the month.
+func Decide(rt Route, states map[string]State) Decision {
 	var skipped []string
 	for _, p := range rt.Providers {
 		s, ok := states[p.Name]
 		if !ok {
-			skipped = append(skipped, p.Name+": no observation")
+			skipped = append(skipped, p.Name+": not observed")
 			continue
 		}
-		ok, why, err := Usable(p, s)
-		if err != nil {
-			return Decision{}, err
-		}
+		ok, why := Usable(p, s)
 		if !ok {
 			skipped = append(skipped, p.Name+": "+why)
 			continue
 		}
-		if p.Kind == Metered && rt.Balance == Pace {
+		if p.Kind == Metered {
 			p, why = paced(rt.Providers, states)
 		}
-		return Decision{Provider: p.Name, Label: p.Label, Reason: reason(why, skipped)}, nil
+		return Decision{Provider: p.Name, Label: p.Label, Reason: reason(why, skipped)}
 	}
-	return Decision{Provider: rt.Fallback.Name, Label: rt.Fallback.Label, Reason: reason("no free capacity, jobs queue", skipped), Fallback: true}, nil
+	return Decision{Provider: rt.Fallback.Name, Label: rt.Fallback.Label, Reason: reason("no free capacity, jobs wait", skipped), Fallback: true}
 }
 
-// paced returns the usable metered provider with the smallest used share of its
-// minutes above the reserve. Callers ensure at least one is usable.
 func paced(providers []Provider, states map[string]State) (Provider, string) {
 	var best Provider
 	bestShare := -1.0
@@ -168,47 +132,43 @@ func paced(providers []Provider, states map[string]State) (Provider, string) {
 		if !ok || p.Kind != Metered {
 			continue
 		}
-		if usable, _, err := Usable(p, s); err != nil || !usable {
+		if usable, _ := Usable(p, s); !usable {
 			continue
 		}
-		share := s.UsedMinutes / (p.MonthlyMinutes - p.ReserveMinutes)
+		share := s.UsedMinutes / p.Limit()
 		shares = append(shares, fmt.Sprintf("%s %.0f%%", p.Name, share*100))
 		if bestShare < 0 || share < bestShare {
 			best, bestShare = p, share
 		}
 	}
-	return best, "lowest share of free minutes used: " + strings.Join(shares, ", ")
+	if len(shares) == 1 {
+		return best, fmt.Sprintf("%.0f free minutes left", best.Limit()-states[best.Name].UsedMinutes)
+	}
+	return best, "least used free tier: " + strings.Join(shares, ", ")
 }
 
 func reason(chosen string, skipped []string) string {
 	if len(skipped) == 0 {
 		return chosen
 	}
-	r := chosen + " (skipped "
-	for i, s := range skipped {
-		if i > 0 {
-			r += "; "
-		}
-		r += s
-	}
-	return r + ")"
+	return chosen + " (skipped " + strings.Join(skipped, "; ") + ")"
 }
 
-// Applied is the label last written to the repository variables.
+// Applied is the label last written for a route.
 type Applied struct {
 	Provider string    `json:"provider"`
 	Label    string    `json:"label"`
 	Since    time.Time `json:"since"`
 }
 
-// Hold keeps the applied label when d would move to another provider before
-// minHold has passed. A move away from an applied provider that is no longer
-// usable is never held. It returns the decision to apply and whether it was held.
-func Hold(d Decision, applied Applied, rt Route, states map[string]State, now time.Time, minHold time.Duration) (Decision, bool) {
-	if applied.Label == "" || applied.Label == d.Label || now.Sub(applied.Since) >= minHold {
+// Hold keeps the applied label for MinHold while its provider stays usable, so a
+// flapping runner does not bounce every queued job. It returns the decision to
+// apply and whether it was held.
+func Hold(d Decision, applied Applied, rt Route, states map[string]State, now time.Time) (Decision, bool) {
+	if applied.Label == "" || applied.Label == d.Label || now.Sub(applied.Since) >= MinHold {
 		return d, false
 	}
-	for _, p := range slices.Concat(rt.Providers, []Provider{rt.Fallback}) {
+	for _, p := range append(append([]Provider(nil), rt.Providers...), rt.Fallback) {
 		if p.Name != applied.Provider || p.Label != applied.Label {
 			continue
 		}
@@ -216,14 +176,22 @@ func Hold(d Decision, applied Applied, rt Route, states map[string]State, now ti
 		if !ok {
 			return d, false
 		}
-		if usable, why, err := Usable(p, s); err == nil && usable {
-			wait := (minHold - now.Sub(applied.Since)).Round(time.Second)
-			return Decision{
-				Provider: p.Name, Label: p.Label,
-				Reason: fmt.Sprintf("held %s for %s more; %s preferred: %s", why, wait, d.Provider, d.Reason),
-			}, true
+		if usable, why := Usable(p, s); usable {
+			wait := (MinHold - now.Sub(applied.Since)).Round(time.Second)
+			return Decision{Provider: p.Name, Label: p.Label, Reason: fmt.Sprintf("held %s for %s more; %s preferred: %s", why, wait, d.Provider, d.Reason)}, true
 		}
 		return d, false
 	}
 	return d, false
+}
+
+// Saved estimates what this month's self-hosted minutes would cost on GitHub.
+func Saved(providers []Provider, states map[string]State) float64 {
+	var minutes float64
+	for _, p := range providers {
+		if p.Kind == SelfHosted {
+			minutes += states[p.Name].UsedMinutes
+		}
+	}
+	return minutes * GitHubMinuteUSD
 }
