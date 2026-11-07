@@ -14,8 +14,8 @@ spend the minutes zerobill exists to save.
 Milestone 2, switching. `zerobill plan` reads a policy and a provider snapshot and prints
 the label it would choose. `zerobill observe` and `zerobill watch` collect live state
 from GitHub and log decisions. With `mode: switch`, `watch` also writes the chosen label
-to the configured repository variables. Rerunning jobs stuck on an offline label comes
-next; see [the design](docs/design.md).
+to the configured repository variables and moves jobs stuck on an unusable self-hosted
+label. Monthly reports come next; see [the design](docs/design.md).
 
 ## How it decides
 
@@ -76,9 +76,18 @@ that differ from the chosen label, so a manual edit is corrected on the next int
 An interval in which any collector failed writes nothing. The last applied label and
 its time are kept in `--applied` (default `zerobill-applied.json`) for the hold.
 
-Writing needs the `repo` scope on a classic token, or the Variables repository
-permission with write access on a fine-grained token, in addition to the read access
-above. Each log line lists the variables it changed under `written`.
+`runs-on` is read when a job is queued, so a job already waiting on a self-hosted label
+keeps it after the variable changes. Once every variable holds the new label, `watch`
+cancels runs with a job queued on a self-hosted label whose provider is offline or
+saturated, and on the next interval reruns their failed and cancelled jobs, which read
+the new label. A run with a started job is left alone, so no work in progress is lost,
+and a run is moved at most once. Jobs queued on the `fallback` label while nothing has
+free capacity stay queued.
+
+Writing needs the `repo` scope on a classic token. A fine-grained token needs write
+access to the Variables and Actions repository permissions, in addition to the read
+access above. Each log line lists the variables it changed under `written` and the runs
+it moved under `cancelled` and `rerun`.
 
 ## Scope
 
