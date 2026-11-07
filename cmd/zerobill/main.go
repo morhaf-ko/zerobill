@@ -25,7 +25,8 @@ const usage = `usage:
   zerobill observe --config zerobill.yaml [--state zerobill-state.json] [--out observed.yaml]
   zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--interval 5m] [--count 0]
 
-observe and watch read GITHUB_TOKEN and never write to GitHub.`
+observe and watch read GITHUB_TOKEN and never write to GitHub. observe fails when
+any collector fails; watch logs the error and decides without that provider.`
 
 func main() {
 	if len(os.Args) < 2 {

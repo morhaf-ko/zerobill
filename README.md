@@ -48,11 +48,12 @@ user, and only send GET requests. Each provider's collector follows from its con
 | Provider | Collector |
 | --- | --- |
 | `kind: self-hosted` | Online when any runner with the label is online. Queue age is the oldest queued job on the label in `repositories`. |
-| `kind: metered`, label `blacksmith-*` | Job durations on `blacksmith-*` labels in all of the owner's repositories this month, rounded up per job and scaled by vCPU/2. Completed jobs are cached in `--state`. |
-| `kind: metered`, any other label | `Actions Linux` minutes from the billing usage report for this month. |
+| `kind: metered`, label `blacksmith-*` | Job durations on `blacksmith-*` labels in runs created this month (UTC) in all of the owner's repositories, rounded up per job and scaled by vCPU/2. Completed jobs are cached in `--state`. |
+| `kind: metered`, label `ubuntu-*` | `Actions Linux` minutes from the billing usage report for this month. |
 
 The billing report needs organization admin access, or the `user` scope for a user
-account. `watch` logs one JSON line per interval; a provider whose collector fails is
+account. A user owner must also be the token's user, since only they can list their
+private repositories. `watch` logs one JSON line per interval; a provider whose collector fails is
 reported under `errors` and skipped by the policy.
 
 ```sh

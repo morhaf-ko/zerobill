@@ -144,7 +144,7 @@ func TestBlacksmithMultiplier(t *testing.T) {
 		"blacksmith-32vcpu-ubuntu-2404-arm": 16,
 		"blacksmith":                        1,
 	} {
-		if got := BlacksmithMultiplier(label); got != want {
+		if got := blacksmithMultiplier(label); got != want {
 			t.Errorf("%s: got %v, want %v", label, got, want)
 		}
 	}
@@ -184,7 +184,7 @@ func TestBlacksmithCachesCompletedJobs(t *testing.T) {
 		ts(10*time.Minute), ts(5*time.Minute), ts(90*time.Second)))
 
 	c := f.collector("acme")
-	c.StatePath = filepath.Join(t.TempDir(), "state.json")
+	c.StatePath = filepath.Join(t.TempDir(), "new", "state.json")
 	// 61s on 2 vCPU bills 2, 3m on 4 vCPU bills 6, 5m bills 5, 90s running bills 2.
 	for i := 0; i < 2; i++ {
 		s, err := c.Blacksmith()
@@ -223,7 +223,11 @@ func TestObserveRoutesProvidersAndReportsErrors(t *testing.T) {
 	r := f.collector("acme").Observe([]policy.Provider{
 		{Name: "home", Label: "home-ci", Kind: policy.SelfHosted},
 		{Name: "github", Label: "ubuntu-24.04", Kind: policy.Metered},
+		{Name: "typo", Label: "ubuntu24", Kind: policy.Metered},
 	})
+	if !strings.Contains(r.Errors["typo"], "no collector") {
+		t.Fatalf("typo: %+v", r.Errors)
+	}
 	if _, ok := r.States["home"]; ok || !strings.Contains(r.Errors["home"], "403") {
 		t.Fatalf("home: states %+v errors %+v", r.States, r.Errors)
 	}
@@ -232,5 +236,36 @@ func TestObserveRoutesProvidersAndReportsErrors(t *testing.T) {
 	}
 	if r.States["github"].UsedMinutes != 50 {
 		t.Fatalf("github: %+v", r.States["github"])
+	}
+}
+
+func TestBlacksmithSplitsMonthOverSearchCap(t *testing.T) {
+	f := newFake(t)
+	f.json("/users/acme", `{"type":"Organization"}`)
+	f.json("/orgs/acme/repos", `[{"full_name":"acme/app","owner":{"login":"acme"}}]`)
+	var days []string
+	f.routes["/repos/acme/app/actions/runs"] = func(w http.ResponseWriter, r *http.Request) {
+		created := r.URL.Query().Get("created")
+		if created == ">=2026-11-01" {
+			fmt.Fprint(w, `{"total_count":1500,"workflow_runs":[]}`)
+			return
+		}
+		days = append(days, created)
+		fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
+	}
+	if _, err := f.collector("acme").Blacksmith(); err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 7 || days[0] != "2026-11-01" || days[6] != "2026-11-07" {
+		t.Fatalf("day queries %v, want 2026-11-01..07", days)
+	}
+}
+
+func TestBlacksmithUserOwnerNeedsOwnToken(t *testing.T) {
+	f := newFake(t)
+	f.json("/users/octo", `{"type":"User"}`)
+	f.json("/user", `{"login":"someone-else"}`)
+	if _, err := f.collector("octo").Blacksmith(); err == nil || !strings.Contains(err.Error(), "needs a token") {
+		t.Fatalf("expected a token owner error, got %v", err)
 	}
 }

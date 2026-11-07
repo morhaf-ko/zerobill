@@ -16,9 +16,9 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/policy"
 )
 
-// LinuxSKU is the billing usage SKU for GitHub-hosted Linux minutes, the only SKU
+// linuxSKU is the billing usage SKU for GitHub-hosted Linux minutes, the only SKU
 // the free minute allowance counts at a 1x rate.
-const LinuxSKU = "Actions Linux"
+const linuxSKU = "Actions Linux"
 
 // Collector observes providers for one GitHub owner, either an organization or a user.
 type Collector struct {
@@ -52,10 +52,12 @@ func (c *Collector) Observe(providers []policy.Provider) Result {
 		switch {
 		case p.Kind == policy.SelfHosted:
 			s, err = c.SelfHosted(p.Label)
-		case p.Kind == policy.Metered && IsBlacksmith(p.Label):
+		case p.Kind == policy.Metered && isBlacksmith(p.Label):
 			s, err = c.Blacksmith()
-		case p.Kind == policy.Metered:
+		case p.Kind == policy.Metered && strings.HasPrefix(p.Label, "ubuntu-"):
 			s, err = c.GitHubHosted()
+		case p.Kind == policy.Metered:
+			err = fmt.Errorf("no collector for metered label %q; use blacksmith-* or ubuntu-*", p.Label)
 		default:
 			err = fmt.Errorf("unknown kind %q", p.Kind)
 		}
@@ -91,10 +93,12 @@ func (c *Collector) ownerIsOrg() (bool, error) {
 }
 
 type runner struct {
-	Status string `json:"status"`
-	Labels []struct {
-		Name string `json:"name"`
-	} `json:"labels"`
+	Status string        `json:"status"`
+	Labels []runnerLabel `json:"labels"`
+}
+
+type runnerLabel struct {
+	Name string `json:"name"`
 }
 
 type workflowRun struct {
@@ -136,7 +140,7 @@ func (c *Collector) SelfHosted(label string) (policy.State, error) {
 				return err
 			}
 			for _, r := range page.Runners {
-				if r.Status == "online" && r.hasLabel(label) {
+				if r.Status == "online" && slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return l.Name == label }) {
 					s.Online = true
 				}
 			}
@@ -149,13 +153,19 @@ func (c *Collector) SelfHosted(label string) (policy.State, error) {
 
 	now := c.now()
 	for _, repo := range c.Repositories {
+		seen := map[int64]bool{}
 		// Later jobs of a running workflow queue too, so in-progress runs are scanned.
+		// Runs that are waiting, requested or pending hold no runner-queued jobs.
 		for _, status := range []string{"queued", "in_progress"} {
 			runs, err := c.runs("/repos/" + repo + "/actions/runs?status=" + status + "&per_page=100")
 			if err != nil {
 				return policy.State{}, err
 			}
 			for _, run := range runs {
+				if seen[run.ID] {
+					continue
+				}
+				seen[run.ID] = true
 				jobs, err := c.jobs(repo, run.ID, "latest")
 				if err != nil {
 					return policy.State{}, err
@@ -171,15 +181,6 @@ func (c *Collector) SelfHosted(label string) (policy.State, error) {
 		}
 	}
 	return s, nil
-}
-
-func (r runner) hasLabel(label string) bool {
-	for _, l := range r.Labels {
-		if l.Name == label {
-			return true
-		}
-	}
-	return false
 }
 
 // GitHubHosted sums this month's GitHub-hosted Linux minutes from the billing
@@ -208,7 +209,7 @@ func (c *Collector) GitHubHosted() (policy.State, error) {
 	}
 	s := policy.State{Online: true}
 	for _, it := range report.UsageItems {
-		if strings.EqualFold(it.Product, "actions") && it.SKU == LinuxSKU && it.UnitType == "Minutes" {
+		if strings.EqualFold(it.Product, "actions") && it.SKU == linuxSKU && it.UnitType == "Minutes" {
 			s.UsedMinutes += it.Quantity
 		}
 	}
@@ -217,14 +218,14 @@ func (c *Collector) GitHubHosted() (policy.State, error) {
 
 var blacksmithVCPU = regexp.MustCompile(`^blacksmith-(\d+)vcpu-`)
 
-// IsBlacksmith reports whether a runs-on label targets a Blacksmith runner.
-func IsBlacksmith(label string) bool {
+// isBlacksmith reports whether a runs-on label targets a Blacksmith runner.
+func isBlacksmith(label string) bool {
 	return strings.HasPrefix(label, "blacksmith-")
 }
 
-// BlacksmithMultiplier converts wall-clock minutes on a label into billed
+// blacksmithMultiplier converts wall-clock minutes on a label into billed
 // 2-vCPU minutes. Labels without a vCPU count bill as 2 vCPU.
-func BlacksmithMultiplier(label string) float64 {
+func blacksmithMultiplier(label string) float64 {
 	m := blacksmithVCPU.FindStringSubmatch(label)
 	if m == nil {
 		return 1
@@ -236,23 +237,24 @@ func BlacksmithMultiplier(label string) float64 {
 	return float64(n) / 2
 }
 
-// BilledMinutes rounds a job's duration up to whole minutes and applies the
+// billedMinutes rounds a job's duration up to whole minutes and applies the
 // Blacksmith size multiplier. Jobs not on a Blacksmith label bill nothing.
-func BilledMinutes(labels []string, started, completed time.Time) float64 {
+func billedMinutes(labels []string, started, completed time.Time) float64 {
 	for _, l := range labels {
-		if IsBlacksmith(l) {
+		if isBlacksmith(l) {
 			d := completed.Sub(started)
 			if d <= 0 {
 				return 0
 			}
-			return math.Ceil(d.Minutes()) * BlacksmithMultiplier(l)
+			return math.Ceil(d.Minutes()) * blacksmithMultiplier(l)
 		}
 	}
 	return 0
 }
 
 // Blacksmith estimates this month's billed Blacksmith minutes from the jobs of
-// every repository the owner has, caching completed jobs in StatePath.
+// runs created this month in every repository the owner has, caching completed
+// jobs in StatePath.
 func (c *Collector) Blacksmith() (policy.State, error) {
 	now := c.now()
 	month := now.Format("2006-01")
@@ -264,10 +266,9 @@ func (c *Collector) Blacksmith() (policy.State, error) {
 	if err != nil {
 		return policy.State{}, err
 	}
-	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 	var running float64
 	for _, repo := range repos {
-		runs, err := c.runs("/repos/" + repo + "/actions/runs?per_page=100&created=" + url.QueryEscape(">="+start))
+		runs, err := c.monthRuns(repo, now)
 		if err != nil {
 			return policy.State{}, err
 		}
@@ -288,13 +289,13 @@ func (c *Collector) Blacksmith() (policy.State, error) {
 				}
 				switch {
 				case j.Status == "completed" && j.StartedAt != nil && j.CompletedAt != nil:
-					st.Jobs[id] = BilledMinutes(j.Labels, *j.StartedAt, *j.CompletedAt)
+					st.Jobs[id] = billedMinutes(j.Labels, *j.StartedAt, *j.CompletedAt)
 				case j.Status == "completed":
 					st.Jobs[id] = 0
 				default:
 					done = false
 					if j.StartedAt != nil {
-						running += BilledMinutes(j.Labels, *j.StartedAt, now)
+						running += billedMinutes(j.Labels, *j.StartedAt, now)
 					}
 				}
 			}
@@ -319,7 +320,18 @@ func (c *Collector) ownerRepos() ([]string, error) {
 		return nil, err
 	}
 	path := "/user/repos?affiliation=owner&per_page=100"
-	if org {
+	if !org {
+		// Only the authenticated user can list their own private repositories.
+		var me struct {
+			Login string `json:"login"`
+		}
+		if err := c.GH.Get("/user", &me); err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(me.Login, c.Owner) {
+			return nil, fmt.Errorf("user owner %s needs a token of that user, got %s", c.Owner, me.Login)
+		}
+	} else {
 		path = "/orgs/" + url.PathEscape(c.Owner) + "/repos?type=all&per_page=100"
 	}
 	var repos []string
@@ -344,19 +356,55 @@ func (c *Collector) ownerRepos() ([]string, error) {
 	return repos, err
 }
 
+// runSearchCap is the most runs the API returns for a query filtered by created or status.
+const runSearchCap = 1000
+
+// monthRuns lists runs created this month (UTC), one query per day when the month
+// exceeds the search cap.
+func (c *Collector) monthRuns(repo string, now time.Time) ([]workflowRun, error) {
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	runs, total, err := c.runsTotal("/repos/" + repo + "/actions/runs?per_page=100&created=" + url.QueryEscape(">="+start.Format("2006-01-02")))
+	if err != nil || total <= runSearchCap {
+		return runs, err
+	}
+	runs = runs[:0]
+	for day := start; !day.After(now); day = day.AddDate(0, 0, 1) {
+		page, total, err := c.runsTotal("/repos/" + repo + "/actions/runs?per_page=100&created=" + day.Format("2006-01-02"))
+		if err != nil {
+			return nil, err
+		}
+		if total > runSearchCap {
+			return nil, fmt.Errorf("%s: %d runs on %s exceed the API's %d-result cap", repo, total, day.Format("2006-01-02"), runSearchCap)
+		}
+		runs = append(runs, page...)
+	}
+	return runs, nil
+}
+
 func (c *Collector) runs(path string) ([]workflowRun, error) {
+	runs, total, err := c.runsTotal(path)
+	if err == nil && total > runSearchCap {
+		return nil, fmt.Errorf("%s: %d runs exceed the API's %d-result cap", path, total, runSearchCap)
+	}
+	return runs, err
+}
+
+func (c *Collector) runsTotal(path string) ([]workflowRun, int, error) {
 	var runs []workflowRun
+	var total int
 	err := c.GH.Paginate(path, func(body []byte) error {
 		var page struct {
+			TotalCount   int           `json:"total_count"`
 			WorkflowRuns []workflowRun `json:"workflow_runs"`
 		}
 		if err := json.Unmarshal(body, &page); err != nil {
 			return err
 		}
+		total = page.TotalCount
 		runs = append(runs, page.WorkflowRuns...)
 		return nil
 	})
-	return runs, err
+	return runs, total, err
 }
 
 func (c *Collector) jobs(repo string, runID int64, filter string) ([]job, error) {
