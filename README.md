@@ -17,6 +17,12 @@ never falls back between the two:
 - A job sent to hosted runners after the free minutes are used is blocked or billed.
 - Dependency bots open pull requests at night, when your machine is off.
 
+Think of three ways to get to school: a parent's car that is free but only when they
+are home (your machine), a bus with 2,000 free rides a month (GitHub), and a carpool
+with 3,000 (Blacksmith). Without zerobill you pick one ride for good, so you either wait
+at the door for a car that is not coming, or spend bus rides on days the car was free.
+zerobill checks every few minutes and changes the sign on the door to the free ride.
+
 zerobill does two things. Every 5 minutes it sets the repository variable `CI_RUNNER`
 to the best free runner, which your workflows read with
 `runs-on: ${{ vars.CI_RUNNER }}`. And it reruns jobs that were already stuck on your
