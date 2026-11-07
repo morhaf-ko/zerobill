@@ -117,7 +117,7 @@ func watch(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	cfgPath := fs.String("config", "zerobill.yaml", "routing policy")
 	statePath := fs.String("state", "zerobill-state.json", "Blacksmith job cache")
-	appliedPath := fs.String("applied", "zerobill-applied.json", "last applied label, used in switch mode")
+	appliedPath := fs.String("applied", "zerobill-applied.json", "switch-mode state: applied label and moved runs")
 	interval := fs.Duration("interval", 5*time.Minute, "time between decisions")
 	count := fs.Int("count", 0, "stop after this many decisions; 0 runs forever")
 	_ = fs.Parse(args)
@@ -136,7 +136,7 @@ func watch(args []string) error {
 	if cfg.Mode == config.Switch {
 		ctl.writer = &apply.Writer{GH: c.GH}
 		ctl.appliedPath = *appliedPath
-		if ctl.applied, err = apply.LoadApplied(*appliedPath); err != nil {
+		if ctl.state, err = apply.LoadState(*appliedPath); err != nil {
 			return err
 		}
 	}
@@ -170,6 +170,9 @@ type decisionLine struct {
 	// Written lists "owner/name VARIABLE" pairs changed in this interval; null in
 	// dry-run mode and when nothing was attempted.
 	Written []string `json:"written"`
+	// Cancelled and Rerun list runs moved off a stale self-hosted label, as owner/name#id.
+	Cancelled []string `json:"cancelled,omitempty"`
+	Rerun     []string `json:"rerun,omitempty"`
 }
 
 // controller decides each interval and, with a writer, applies the decision.
@@ -178,7 +181,7 @@ type controller struct {
 	providers   []policy.Provider
 	writer      *apply.Writer
 	appliedPath string
-	applied     policy.Applied
+	state       apply.State
 }
 
 func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
@@ -197,7 +200,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	} else if c.writer != nil && len(r.Errors) > 0 {
 		line.Errors["write"] = "skipped: a collector failed"
 	} else if c.writer != nil {
-		d, line.Held = policy.Hold(d, c.applied, c.providers, r.States, now, c.cfg.Hold())
+		d, line.Held = policy.Hold(d, c.state.Applied, c.providers, r.States, now, c.cfg.Hold())
 		written, werr := c.writer.Sync(c.cfg.Repositories, c.cfg.Variables, d.Label)
 		line.Written = written
 		if line.Written == nil {
@@ -207,11 +210,20 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 			line.Errors["write"] = werr.Error()
 		}
 		// A partial write still moves jobs, so it starts the hold for the new label.
-		if (werr == nil || len(written) > 0) && (d.Label != c.applied.Label || d.Provider != c.applied.Provider) {
-			c.applied = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
-			if err := apply.SaveApplied(c.appliedPath, c.applied); err != nil {
-				line.Errors["state"] = err.Error()
+		if (werr == nil || len(written) > 0) && (d.Label != c.state.Label || d.Provider != c.state.Provider) {
+			c.state.Applied = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
+		}
+		// Runs move only once every variable holds the new label, so a rerun job reads it.
+		if werr == nil {
+			var merr error
+			checkpoint := func() error { return apply.SaveState(c.appliedPath, c.state) }
+			line.Cancelled, line.Rerun, merr = c.writer.Move(&c.state, c.stuck(d.Label, r), now, checkpoint)
+			if merr != nil {
+				line.Errors["move"] = merr.Error()
 			}
+		}
+		if err := apply.SaveState(c.appliedPath, c.state); err != nil {
+			line.Errors["state"] = err.Error()
 		}
 	}
 	if err == nil {
@@ -221,6 +233,22 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		line.Errors = nil
 	}
 	return json.NewEncoder(w).Encode(line)
+}
+
+// stuck returns movable runs queued on self-hosted labels other than label whose
+// provider cannot take jobs now.
+func (c *controller) stuck(label string, r collect.Result) []collect.Run {
+	var runs []collect.Run
+	for _, p := range c.providers {
+		if p.Kind != policy.SelfHosted || p.Label == label {
+			continue
+		}
+		if ok, _, err := policy.Usable(p, r.States[p.Name]); err != nil || ok {
+			continue
+		}
+		runs = append(runs, r.Movable[p.Name]...)
+	}
+	return runs
 }
 
 func loadConfig(path string) (*config.Config, []policy.Provider, error) {

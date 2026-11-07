@@ -40,18 +40,32 @@ type Collector struct {
 type Result struct {
 	States map[string]policy.State
 	Errors map[string]string
+	// Movable lists, per self-hosted provider, runs with a job queued on its label
+	// that can be cancelled and rerun without stopping a started job.
+	Movable map[string][]Run
+}
+
+// Run identifies one attempt of a workflow run.
+type Run struct {
+	Repo    string `json:"repo"`
+	ID      int64  `json:"id"`
+	Attempt int    `json:"attempt"`
 }
 
 // Observe collects state for each provider. A failed provider is reported in
 // Result.Errors and left out of Result.States, so the policy skips it.
 func (c *Collector) Observe(providers []policy.Provider) Result {
-	r := Result{States: map[string]policy.State{}, Errors: map[string]string{}}
+	r := Result{States: map[string]policy.State{}, Errors: map[string]string{}, Movable: map[string][]Run{}}
 	for _, p := range providers {
 		var s policy.State
 		var err error
 		switch {
 		case p.Kind == policy.SelfHosted:
-			s, err = c.SelfHosted(p.Label)
+			var movable []Run
+			s, movable, err = c.SelfHosted(p.Label)
+			if err == nil && len(movable) > 0 {
+				r.Movable[p.Name] = movable
+			}
 		case p.Kind == policy.Metered && isBlacksmith(p.Label):
 			s, err = c.Blacksmith()
 		case p.Kind == policy.Metered && strings.HasPrefix(p.Label, "ubuntu-"):
@@ -110,6 +124,7 @@ type workflowRun struct {
 type job struct {
 	ID          int64      `json:"id"`
 	Status      string     `json:"status"`
+	Conclusion  string     `json:"conclusion"`
 	Labels      []string   `json:"labels"`
 	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at"`
@@ -118,10 +133,13 @@ type job struct {
 
 // SelfHosted reports a label online when any runner carrying it is online, and
 // the age of the oldest queued job targeting it in the configured repositories.
-func (c *Collector) SelfHosted(label string) (policy.State, error) {
+// It also returns the runs that can move off the label: every queued job is on
+// it, no job has started, and no completed job failed or was cancelled, so a
+// rerun of failed jobs reruns only what zerobill cancelled.
+func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
 	org, err := c.ownerIsOrg()
 	if err != nil {
-		return policy.State{}, err
+		return policy.State{}, nil, err
 	}
 	paths := []string{"/orgs/" + url.PathEscape(c.Owner) + "/actions/runners?per_page=100"}
 	if !org {
@@ -147,10 +165,11 @@ func (c *Collector) SelfHosted(label string) (policy.State, error) {
 			return nil
 		})
 		if err != nil {
-			return policy.State{}, err
+			return policy.State{}, nil, err
 		}
 	}
 
+	var movable []Run
 	now := c.now()
 	for _, repo := range c.Repositories {
 		seen := map[int64]bool{}
@@ -159,7 +178,7 @@ func (c *Collector) SelfHosted(label string) (policy.State, error) {
 		for _, status := range []string{"queued", "in_progress"} {
 			runs, err := c.runs("/repos/" + repo + "/actions/runs?status=" + status + "&per_page=100")
 			if err != nil {
-				return policy.State{}, err
+				return policy.State{}, nil, err
 			}
 			for _, run := range runs {
 				if seen[run.ID] {
@@ -168,19 +187,28 @@ func (c *Collector) SelfHosted(label string) (policy.State, error) {
 				seen[run.ID] = true
 				jobs, err := c.jobs(repo, run.ID, "latest")
 				if err != nil {
-					return policy.State{}, err
+					return policy.State{}, nil, err
 				}
+				onLabel, pinned := false, false
 				for _, j := range jobs {
-					if j.Status == "queued" && slices.Contains(j.Labels, label) {
+					switch {
+					case j.Status == "queued" && slices.Contains(j.Labels, label):
+						onLabel = true
 						if age := now.Sub(j.CreatedAt); age > s.OldestQueued {
 							s.OldestQueued = age
 						}
+					case j.Status == "completed" && (j.Conclusion == "success" || j.Conclusion == "skipped" || j.Conclusion == "neutral"):
+					default:
+						pinned = true
 					}
+				}
+				if onLabel && !pinned {
+					movable = append(movable, Run{Repo: repo, ID: run.ID, Attempt: run.RunAttempt})
 				}
 			}
 		}
 	}
-	return s, nil
+	return s, movable, nil
 }
 
 // GitHubHosted sums this month's GitHub-hosted Linux minutes from the billing

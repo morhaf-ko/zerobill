@@ -19,8 +19,11 @@ A small controller runs on an always-on host, such as a Raspberry Pi. On each in
    provider; moving off one that is no longer usable is immediate. An interval with a
    failed collector writes nothing, so a transient API error cannot move jobs onto a
    metered provider.
-4. Cancels and reruns jobs queued on a label that went offline, so they pick up the new
-   value. `runs-on` is evaluated when a job is queued, so queued jobs keep their label.
+4. Cancels runs queued on a self-hosted label that is offline or saturated, and reruns
+   their failed and cancelled jobs on the next interval, once the cancellation has
+   completed, so they pick up the new value. `runs-on` is evaluated when a job is
+   queued, so queued jobs keep their label. Runs with a started job are left alone, and
+   each run moves at most once, so a job with a literal `runs-on` cannot loop.
 
 ## Collectors
 

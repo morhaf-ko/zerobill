@@ -67,24 +67,37 @@ func TestSelfHostedOrg(t *testing.T) {
 	}
 	f.routes["/repos/acme/app/actions/runs"] = func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("status") == "queued" {
-			fmt.Fprint(w, `{"workflow_runs":[{"id":1,"run_attempt":1,"status":"queued"}]}`)
+			fmt.Fprint(w, `{"workflow_runs":[{"id":1,"run_attempt":1,"status":"queued"},{"id":3,"run_attempt":1,"status":"queued"},{"id":4,"run_attempt":1,"status":"queued"},{"id":5,"run_attempt":1,"status":"queued"}]}`)
 			return
 		}
 		fmt.Fprint(w, `{"workflow_runs":[{"id":2,"run_attempt":1,"status":"in_progress"}]}`)
 	}
 	f.json("/repos/acme/app/actions/runs/1/jobs", fmt.Sprintf(`{"jobs":[
-		{"id":10,"status":"queued","labels":["home-ci"],"created_at":%q},
-		{"id":11,"status":"queued","labels":["ubuntu-24.04"],"created_at":%q}]}`, ts(4*time.Minute), ts(time.Hour)))
+		{"id":10,"status":"queued","labels":["self-hosted","home-ci"],"created_at":%q},
+		{"id":11,"status":"completed","conclusion":"success","labels":["ubuntu-24.04"],"created_at":%q}]}`, ts(4*time.Minute), ts(time.Hour)))
+	f.json("/repos/acme/app/actions/runs/3/jobs", fmt.Sprintf(`{"jobs":[
+		{"id":30,"status":"queued","labels":["home-ci"],"created_at":%q},
+		{"id":31,"status":"queued","labels":["ubuntu-24.04"],"created_at":%q}]}`, ts(time.Minute), ts(time.Minute)))
+	f.json("/repos/acme/app/actions/runs/4/jobs", fmt.Sprintf(`{"jobs":[
+		{"id":40,"status":"queued","labels":["home-ci"],"created_at":%q},
+		{"id":41,"status":"completed","conclusion":"failure","labels":["ubuntu-24.04"],"created_at":%q}]}`, ts(time.Minute), ts(time.Minute)))
+	f.json("/repos/acme/app/actions/runs/5/jobs", fmt.Sprintf(`{"jobs":[
+		{"id":50,"status":"waiting","labels":["ubuntu-24.04"],"created_at":%q}]}`, ts(time.Minute)))
 	f.json("/repos/acme/app/actions/runs/2/jobs", fmt.Sprintf(`{"jobs":[
 		{"id":20,"status":"in_progress","labels":["home-ci"],"created_at":%q},
 		{"id":21,"status":"queued","labels":["home-ci"],"created_at":%q}]}`, ts(time.Hour), ts(12*time.Minute)))
 
-	s, err := f.collector("acme", "acme/app").SelfHosted("home-ci")
+	s, movable, err := f.collector("acme", "acme/app").SelfHosted("home-ci")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !s.Online || s.OldestQueued != 12*time.Minute {
 		t.Fatalf("got %+v, want online with a 12m queue", s)
+	}
+	// Run 2 has a started job, run 3 a job queued on a healthy label, run 4 a failed
+	// job a rerun would repeat, and run 5 no job on the label.
+	if len(movable) != 1 || movable[0] != (Run{Repo: "acme/app", ID: 1, Attempt: 1}) {
+		t.Fatalf("movable %+v, want only run 1", movable)
 	}
 	if f.hits["/orgs/acme/actions/runners"] != 2 {
 		t.Fatalf("runner list not paginated: %d requests", f.hits["/orgs/acme/actions/runners"])
@@ -97,11 +110,11 @@ func TestSelfHostedUserReadsRepositoryRunners(t *testing.T) {
 	f.json("/repos/octo/app/actions/runners", `{"runners":[{"status":"offline","labels":[{"name":"home-ci"}]}]}`)
 	f.json("/repos/octo/app/actions/runs", `{"workflow_runs":[]}`)
 
-	s, err := f.collector("octo", "octo/app").SelfHosted("home-ci")
+	s, movable, err := f.collector("octo", "octo/app").SelfHosted("home-ci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Online || s.OldestQueued != 0 {
+	if s.Online || s.OldestQueued != 0 || movable != nil {
 		t.Fatalf("got %+v, want offline with no queue", s)
 	}
 }
