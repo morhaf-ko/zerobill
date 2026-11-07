@@ -8,7 +8,7 @@ After=network-online.target
 
 [Service]
 EnvironmentFile=/etc/zerobill/env
-ExecStart=/usr/local/bin/zerobill watch --config /etc/zerobill/zerobill.yaml --state ${STATE_DIRECTORY}/state.json --applied ${STATE_DIRECTORY}/applied.json --interval 5m
+ExecStart=/usr/local/bin/zerobill watch --config /etc/zerobill/zerobill.yaml --state ${STATE_DIRECTORY}/state.json --applied ${STATE_DIRECTORY}/applied.json --overrides ${STATE_DIRECTORY}/overrides.json --interval 5m
 StateDirectory=zerobill
 DynamicUser=yes
 NoNewPrivileges=yes
