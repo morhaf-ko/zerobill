@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices", ":semanticCommits"],
+  "rebaseWhen": "conflicted",
+  "minimumReleaseAge": "5 days",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "minimumReleaseAge": "0 days",
+    "schedule": ["at any time"],
+    "labels": ["security"]
+  },
+  "automerge": false,
+  "pinDigests": true,
+  "postUpdateOptions": ["gomodTidy"],
+  "schedule": ["before 6am on monday"],
+  "packageRules": [
+    {
+      "description": "These update types carry no release timestamp, so a release age would never pass.",
+      "matchUpdateTypes": ["lockFileMaintenance", "digest", "pinDigest", "pin", "replacement", "bump", "lockfileUpdate", "rollback"],
+      "minimumReleaseAge": null
+    },
+    {
+      "groupName": "github actions",
+      "matchManagers": ["github-actions"]
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "labels": ["breaking-change"]
+    }
+  ]
+}
