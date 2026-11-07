@@ -63,6 +63,8 @@ Without `--apply`, `run` logs the same decisions as JSON lines and writes nothin
 ## Running it as a service
 
 On Linux, [`examples/zerobill.service`](../examples/zerobill.service) is a systemd user
-service that uses your GitHub CLI login. On macOS, run `zerobill run --apply` from a
+service that uses your GitHub CLI login. Read its decisions with
+`journalctl --user -u zerobill -f`; on systems without per-user journals, use
+`sudo journalctl _SYSTEMD_USER_UNIT=zerobill.service -f`. On macOS, run `zerobill run --apply` from a
 launchd agent. Run it on a different machine than your runner when you can, so a power
 cut there does not stop zerobill as well.
