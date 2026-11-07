@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -21,7 +22,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// version is set at release build time; go install builds report the module version.
+var version = "dev"
+
+func buildVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok && version == "dev" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
+
 const usage = `usage:
+  zerobill version
   zerobill plan --config zerobill.yaml --observed observed.yaml
   zerobill observe --config zerobill.yaml [--state zerobill-state.json] [--out observed.yaml]
   zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--applied zerobill-applied.json] [--interval 5m] [--count 0]
@@ -37,6 +49,9 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "version", "--version":
+		fmt.Println(buildVersion())
+		return
 	case "plan":
 		err = plan(os.Args[2:])
 	case "observe":

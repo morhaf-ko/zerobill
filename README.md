@@ -1,5 +1,9 @@
 # zerobill
 
+[![CI](https://github.com/morhaf-ko/zerobill/actions/workflows/ci.yml/badge.svg)](https://github.com/morhaf-ko/zerobill/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/morhaf-ko/zerobill)](https://github.com/morhaf-ko/zerobill/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 zerobill keeps private-repository CI on GitHub Actions inside free capacity. It runs
 jobs on your own hardware when that hardware is online, spills to free hosted minutes
 when it is not, and queues instead of spending money when every free tier is used.
@@ -9,13 +13,47 @@ in `runs-on: ${{ vars.CI_RUNNER }}`. Workflows stay unchanged, and no extra rout
 runs: GitHub rounds every job up to a whole minute, so a per-workflow router job would
 spend the minutes zerobill exists to save.
 
+## Install
+
+Download a binary for Linux or macOS, amd64 or arm64, from the
+[latest release](https://github.com/morhaf-ko/zerobill/releases/latest). Each release
+publishes `checksums.txt` and a GitHub build attestation:
+
+```sh
+sha256sum --ignore-missing -c checksums.txt      # macOS: shasum -a 256 --ignore-missing -c checksums.txt
+gh attestation verify zerobill_<version>_<os>_<arch>.tar.gz --repo morhaf-ko/zerobill \
+  --signer-workflow morhaf-ko/zerobill/.github/workflows/release.yml
+```
+
+Or build it with Go:
+
+```sh
+go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
+```
+
+## Quick start
+
+1. Point each job at a variable: `runs-on: ${{ vars.CI_RUNNER }}`.
+2. Copy [`examples/zerobill.yaml`](examples/zerobill.yaml) and list your owner,
+   repositories, variables and providers in priority order. List only private
+   repositories: on a public repository, a pull request from a fork would run on your
+   self-hosted hardware, which
+   [GitHub advises against](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security).
+3. Watch the decisions in dry run for a while. Nothing is written:
+
+   ```sh
+   export GITHUB_TOKEN=...   # see Token
+   zerobill watch --config zerobill.yaml --interval 5m
+   ```
+
+4. Set `mode: switch` and run `watch` on an always-on host, for example with the
+   systemd unit in [`examples/zerobill.service`](examples/zerobill.service).
+
 ## Status
 
-Milestone 2, switching. `zerobill plan` reads a policy and a provider snapshot and prints
-the label it would choose. `zerobill observe` and `zerobill watch` collect live state
-from GitHub and log decisions. With `mode: switch`, `watch` also writes the chosen label
-to the configured repository variables and moves jobs stuck on an unusable self-hosted
-label. Monthly reports come next; see [the design](docs/design.md).
+Milestones 1 and 2 are done: live collectors, dry run, variable switching with a
+minimum hold, and moving jobs stuck on an unusable self-hosted label. Monthly reports
+come next; see [the design](docs/design.md).
 
 ## How it decides
 
@@ -33,10 +71,10 @@ moving back to a higher-priority provider, so a runner that flaps online does no
 bounce every queued job. Moving off a provider that went offline, saturated or reached
 its reserve happens on the next interval.
 
-## Try it
+## Try a decision
 
 ```sh
-go run ./cmd/zerobill plan --config examples/zerobill.yaml --observed examples/observed.yaml
+zerobill plan --config examples/zerobill.yaml --observed examples/observed.yaml
 ```
 
 ```text
@@ -63,9 +101,8 @@ private repositories. `watch` logs one JSON line per interval; a provider whose 
 reported under `errors` and skipped by the policy.
 
 ```sh
-export GITHUB_TOKEN=$(gh auth token)
-go run ./cmd/zerobill observe --config zerobill.yaml --out observed.yaml
-go run ./cmd/zerobill watch --config zerobill.yaml --interval 5m
+zerobill observe --config zerobill.yaml --out observed.yaml
+zerobill watch --config zerobill.yaml --interval 5m
 ```
 
 ## Switching
@@ -85,15 +122,50 @@ started and no finished job failed or was cancelled, so nothing else is stopped 
 repeated. Each run moves at most once. Jobs queued on the `fallback` label while nothing has
 free capacity stay queued.
 
-Writing needs the `repo` scope on a classic token. A fine-grained token needs write
-access to the Variables and Actions repository permissions, in addition to the read
-access above. Each log line lists the variables it changed under `written` and the runs
-it moved under `cancelled` and `rerun`.
+Each log line lists the variables it changed under `written` and the runs it moved
+under `cancelled` and `rerun`.
+
+## Token
+
+`observe` and `watch` read the token from `GITHUB_TOKEN`.
+
+| Need | Classic token | Fine-grained token |
+| --- | --- | --- |
+| Runners, runs and jobs | `repo` | Repository Actions and Administration: read; organization Self-hosted runners: read |
+| GitHub-hosted minutes | `user` for a user owner; organization admin for an organization | Not documented by GitHub; use a classic token |
+| Switch mode | `repo` | Repository Variables and Actions: write |
+
+A classic token with `repo` and, for a user owner with a GitHub-hosted provider, `user`
+covers everything. With the GitHub CLI: `gh auth refresh -s user` adds the scope.
+
+## Configuration
+
+| Key | Meaning |
+| --- | --- |
+| `mode` | `dry-run` (default) logs decisions; `switch` lets `watch` write. |
+| `min_hold` | Minimum time a label stays before moving back to a higher-priority provider. Default `15m`. |
+| `owner` | Organization or user whose runners, billing and repositories are read. |
+| `repositories` | `owner/name` list whose variables are written and whose queues are watched. |
+| `variables` | Repository variables set to the chosen label. |
+| `fallback` | Provider chosen when none has free capacity; jobs queue there. |
+| `providers[].kind` | `self-hosted` or `metered`. |
+| `providers[].max_queue_wait` | Self-hosted only: queue age at which the provider counts as saturated. |
+| `providers[].monthly_minutes`, `reserve_minutes` | Metered only: free minutes per month and the part kept back. |
 
 ## Scope
 
 zerobill uses free tiers you already have. It does not create accounts or organizations
 to collect more free minutes; that breaks provider terms.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described
+in [SECURITY.md](SECURITY.md).
+
+## Author
+
+Built and maintained by Morhaf Kourbaj:
+[GitHub](https://github.com/morhaf-ko) · [LinkedIn](https://www.linkedin.com/in/mkourbaj/).
 
 ## License
 

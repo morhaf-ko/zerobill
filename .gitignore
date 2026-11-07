@@ -2,3 +2,4 @@
 .tmp/
 zerobill-state.json
 zerobill-applied.json
+dist/
