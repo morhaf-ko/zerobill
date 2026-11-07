@@ -99,19 +99,20 @@ func TestSyncReportsEveryFailure(t *testing.T) {
 
 func TestStateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "applied.json")
-	if st, err := LoadState(path); err != nil || st.Label != "" {
+	if st, err := LoadState(path); err != nil || len(st.Routes) != 0 {
 		t.Fatalf("missing file: %+v %v", st, err)
 	}
 	at := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	want := State{
-		Applied:   policy.Applied{Provider: "home", Label: "home-ci", Since: at},
+		Routes:    map[string]policy.Applied{"default": {Provider: "home", Label: "home-ci", Since: at}},
+		Stalled:   map[string]time.Time{"home": at},
 		Cancelled: map[string]Moved{"acme/app#1": {Run: collect.Run{Repo: "acme/app", ID: 1, Attempt: 1}, At: at}},
 	}
 	if err := SaveState(path, want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := LoadState(path)
-	if err != nil || got.Applied != want.Applied || got.Cancelled["acme/app#1"] != want.Cancelled["acme/app#1"] {
+	if err != nil || got.Routes["default"] != want.Routes["default"] || !got.Stalled["home"].Equal(at) || got.Cancelled["acme/app#1"] != want.Cancelled["acme/app#1"] {
 		t.Fatalf("got %+v %v", got, err)
 	}
 }

@@ -1,21 +1,25 @@
-# Providers are tried in order. Self-hosted hardware first, metered free tiers after.
+# Providers are listed once; routes decide which variables each may serve.
 # dry-run only logs decisions; switch lets watch write the variables below.
 mode: dry-run
-# A label stays at least this long before moving back to a higher-priority provider.
+# A label stays at least this long before moving to another usable provider.
 # Moving off a provider that went offline or ran out of free minutes is immediate.
 min_hold: 15m
 # Live collectors read runners, billing and repositories of this organization or user.
 owner: your-org
 repositories:
   - your-org/your-app
-variables: [CI_RUNNER, RELEASE_RUNNER, LIGHT_RUNNER]
-# When nothing has free capacity, jobs queue here instead of spending money.
+# When nothing in a route has free capacity, its jobs queue here instead of spending money.
 fallback: home
 providers:
   - name: home
     label: home-ci
     kind: self-hosted
     max_queue_wait: 10m
+    # Runners created per job (GARM, Actions Runner Controller): no registered runner
+    # is normal, so only a job waiting past max_queue_wait marks the provider down,
+    # for retry_after or until a runner comes online.
+    on_demand: true
+    retry_after: 1h
   - name: blacksmith
     label: blacksmith-2vcpu-ubuntu-2404
     kind: metered
@@ -26,3 +30,15 @@ providers:
     kind: metered
     monthly_minutes: 2000
     reserve_minutes: 200
+routes:
+  # Your own pushes: home hardware first, then the free tiers.
+  - name: ci
+    variables: [CI_RUNNER, RELEASE_RUNNER, LIGHT_RUNNER]
+    providers: [home, blacksmith, github]
+    # pace spreads jobs across the free tiers so each lasts the month.
+    balance: pace
+  # Dependency bots: free tiers only, so home hardware stays free for you.
+  - name: bot
+    variables: [BOT_RUNNER]
+    providers: [blacksmith, github]
+    balance: pace

@@ -12,6 +12,8 @@ var fleet = []Provider{
 	{Name: "github", Label: "ubuntu-24.04", Kind: Metered, MonthlyMinutes: 2000, ReserveMinutes: 200, Multiplier: 1},
 }
 
+var ordered = Route{Name: "ci", Providers: fleet, Fallback: fleet[0], Balance: Order}
+
 func TestDecide(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -58,7 +60,7 @@ func TestDecide(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Decide(fleet, tt.states, "forge")
+			got, err := Decide(ordered, tt.states)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -72,9 +74,37 @@ func TestDecide(t *testing.T) {
 	}
 }
 
-func TestDecideRejectsUnknownFallback(t *testing.T) {
-	if _, err := Decide(fleet, map[string]State{}, "pi"); err == nil {
-		t.Fatal("expected an error for an unconfigured fallback")
+func TestDecidePace(t *testing.T) {
+	onDemand := fleet[0]
+	onDemand.OnDemand = true
+	paced := Route{Name: "ci", Providers: []Provider{onDemand, fleet[1], fleet[2]}, Fallback: onDemand, Balance: Pace}
+	tests := []struct {
+		name   string
+		states map[string]State
+		want   string
+		reason string
+	}{
+		{"on-demand provider without runners is used", map[string]State{"forge": {}, "blacksmith": {}, "github": {}}, "forge", "on demand"},
+		{"stalled on-demand provider is skipped", map[string]State{"forge": {Stalled: true}, "blacksmith": {UsedMinutes: 900}, "github": {UsedMinutes: 700}}, "blacksmith", "blacksmith 33%, github 39%"},
+		{"disabled provider is skipped", map[string]State{"forge": {Online: true, Disabled: "away"}, "blacksmith": {UsedMinutes: 1500}, "github": {UsedMinutes: 300}}, "github", "forge: away"},
+		{"provider at reserve is not paced", map[string]State{"forge": {Stalled: true}, "blacksmith": {UsedMinutes: 100}, "github": {UsedMinutes: 1800}}, "blacksmith", "blacksmith 4%"},
+		{"unobserved metered provider is not paced", map[string]State{"forge": {Stalled: true}, "github": {UsedMinutes: 1700}}, "github", "github 94%"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Decide(paced, tt.states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Provider != tt.want || !strings.Contains(got.Reason, tt.reason) {
+				t.Fatalf("got %s (%s), want %s mentioning %q", got.Provider, got.Reason, tt.want, tt.reason)
+			}
+		})
+	}
+	bot := Route{Name: "bot", Providers: fleet[1:], Fallback: fleet[0], Balance: Pace}
+	got, err := Decide(bot, map[string]State{"forge": {}, "blacksmith": {UsedMinutes: 2700}, "github": {UsedMinutes: 1800}})
+	if err != nil || got.Provider != "forge" || !got.Fallback {
+		t.Fatalf("bot route without free minutes should queue on forge: %+v %v", got, err)
 	}
 }
 
@@ -99,11 +129,11 @@ func TestHold(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := Decide(fleet, tt.states, "forge")
+			d, err := Decide(ordered, tt.states)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, held := Hold(d, tt.applied, fleet, tt.states, now, 15*time.Minute)
+			got, held := Hold(d, tt.applied, ordered, tt.states, now, 15*time.Minute)
 			if got.Provider != tt.want || held != tt.held {
 				t.Fatalf("got %s held=%v (%s), want %s held=%v", got.Provider, held, got.Reason, tt.want, tt.held)
 			}

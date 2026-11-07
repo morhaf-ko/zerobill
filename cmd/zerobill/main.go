@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/collect"
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/github"
+	"github.com/morhaf-ko/zerobill/internal/override"
 	"github.com/morhaf-ko/zerobill/internal/policy"
 	"gopkg.in/yaml.v3"
 )
@@ -36,11 +38,14 @@ const usage = `usage:
   zerobill version
   zerobill plan --config zerobill.yaml --observed observed.yaml
   zerobill observe --config zerobill.yaml [--state zerobill-state.json] [--out observed.yaml]
-  zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--applied zerobill-applied.json] [--interval 5m] [--count 0]
+  zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--applied zerobill-applied.json] [--overrides zerobill-overrides.json] [--interval 5m] [--count 0]
+  zerobill disable PROVIDER [--for 72h] [--config zerobill.yaml] [--overrides zerobill-overrides.json]
+  zerobill enable PROVIDER [--overrides zerobill-overrides.json]
 
 observe and watch read GITHUB_TOKEN. Only watch with mode: switch writes to GitHub,
 and it writes nothing in an interval where any collector fails. observe fails when
-any collector fails; watch logs the error.`
+any collector fails; watch logs the error. disable and enable take a provider out of
+rotation and back; a running watch reads the change on its next interval.`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -58,6 +63,10 @@ func main() {
 		err = observe(os.Args[2:])
 	case "watch":
 		err = watch(os.Args[2:])
+	case "disable":
+		err = disable(os.Args[2:], time.Now().UTC())
+	case "enable":
+		err = enable(os.Args[2:])
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -84,15 +93,19 @@ func plan(args []string) error {
 	if err != nil {
 		return err
 	}
-	d, err := policy.Decide(providers, states, cfg.Fallback)
-	if err != nil {
-		return err
-	}
 	fmt.Printf("mode: %s\n", cfg.Mode)
-	fmt.Printf("decision: %s -> %s\n", d.Provider, d.Label)
-	fmt.Printf("reason: %s\n", d.Reason)
-	for _, repo := range cfg.Repositories {
-		fmt.Printf("would set %s on %s to %s\n", strings.Join(cfg.Variables, ", "), repo, d.Label)
+	for _, rt := range cfg.PolicyRoutes(providers) {
+		d, err := policy.Decide(rt, states)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("route %s: %s -> %s\n", rt.Name, d.Provider, d.Label)
+		fmt.Printf("  reason: %s\n", d.Reason)
+		for _, repo := range cfg.Repositories {
+			if len(rt.Variables) > 0 {
+				fmt.Printf("  would set %s on %s to %s\n", strings.Join(rt.Variables, ", "), repo, d.Label)
+			}
+		}
 	}
 	return nil
 }
@@ -132,7 +145,8 @@ func watch(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	cfgPath := fs.String("config", "zerobill.yaml", "routing policy")
 	statePath := fs.String("state", "zerobill-state.json", "Blacksmith job cache")
-	appliedPath := fs.String("applied", "zerobill-applied.json", "switch-mode state: applied label and moved runs")
+	appliedPath := fs.String("applied", "zerobill-applied.json", "switch-mode state: applied labels, stalls and moved runs")
+	overridesPath := fs.String("overrides", "zerobill-overrides.json", "providers disabled with zerobill disable")
 	interval := fs.Duration("interval", 5*time.Minute, "time between decisions")
 	count := fs.Int("count", 0, "stop after this many decisions; 0 runs forever")
 	_ = fs.Parse(args)
@@ -147,7 +161,7 @@ func watch(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctl := &controller{cfg: cfg, providers: providers}
+	ctl := &controller{cfg: cfg, providers: providers, routes: cfg.PolicyRoutes(providers), overridesPath: *overridesPath}
 	if cfg.Mode == config.Switch {
 		ctl.writer = &apply.Writer{GH: c.GH}
 		ctl.appliedPath = *appliedPath
@@ -173,30 +187,40 @@ func watch(args []string) error {
 type decisionLine struct {
 	Time         time.Time                  `json:"time"`
 	Mode         string                     `json:"mode"`
-	Provider     string                     `json:"provider,omitempty"`
-	Label        string                     `json:"label,omitempty"`
-	Reason       string                     `json:"reason,omitempty"`
-	Fallback     bool                       `json:"fallback"`
-	Held         bool                       `json:"held,omitempty"`
+	Routes       []routeLine                `json:"routes"`
 	Observed     map[string]config.Observed `json:"observed"`
+	Disabled     map[string]string          `json:"disabled,omitempty"`
 	Errors       map[string]string          `json:"errors,omitempty"`
 	Repositories []string                   `json:"repositories"`
-	Variables    []string                   `json:"variables"`
-	// Written lists "owner/name VARIABLE" pairs changed in this interval; null in
-	// dry-run mode and when nothing was attempted.
-	Written []string `json:"written"`
 	// Cancelled and Rerun list runs moved off a stale self-hosted label, as owner/name#id.
 	Cancelled []string `json:"cancelled,omitempty"`
 	Rerun     []string `json:"rerun,omitempty"`
 }
 
-// controller decides each interval and, with a writer, applies the decision.
+// routeLine is one route's decision in a log entry.
+type routeLine struct {
+	Name      string   `json:"name"`
+	Variables []string `json:"variables"`
+	Provider  string   `json:"provider,omitempty"`
+	Label     string   `json:"label,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
+	Fallback  bool     `json:"fallback"`
+	Held      bool     `json:"held,omitempty"`
+	// Written lists "owner/name VARIABLE" pairs changed in this interval; null in
+	// dry-run mode and when nothing was attempted.
+	Written []string `json:"written"`
+}
+
+// controller decides each interval and, with a writer, applies the decision. In
+// dry-run mode it keeps the same state in memory, so holds show in the log.
 type controller struct {
-	cfg         *config.Config
-	providers   []policy.Provider
-	writer      *apply.Writer
-	appliedPath string
-	state       apply.State
+	cfg           *config.Config
+	providers     []policy.Provider
+	routes        []policy.Route
+	writer        *apply.Writer
+	appliedPath   string
+	overridesPath string
+	state         apply.State
 }
 
 func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
@@ -204,45 +228,80 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		Time: now, Mode: c.cfg.Mode,
 		Observed:     config.Snapshot(c.providers, r.States).Providers,
 		Errors:       map[string]string{},
-		Repositories: c.cfg.Repositories, Variables: c.cfg.Variables,
+		Repositories: c.cfg.Repositories,
 	}
 	for k, v := range r.Errors {
 		line.Errors[k] = v
 	}
-	d, err := policy.Decide(c.providers, r.States, c.cfg.Fallback)
-	if err != nil {
-		line.Errors["policy"] = err.Error()
-	} else if c.writer != nil && len(r.Errors) > 0 {
+	states := c.adjust(now, r.States, line.Errors)
+	for name, s := range states {
+		if s.Disabled != "" {
+			if line.Disabled == nil {
+				line.Disabled = map[string]string{}
+			}
+			line.Disabled[name] = s.Disabled
+		}
+	}
+	if c.state.Routes == nil {
+		c.state.Routes = map[string]policy.Applied{}
+	}
+	write := c.writer != nil && len(r.Errors) == 0
+	if c.writer != nil && !write {
 		line.Errors["write"] = "skipped: a collector failed"
-	} else if c.writer != nil {
-		d, line.Held = policy.Hold(d, c.state.Applied, c.providers, r.States, now, c.cfg.Hold())
-		written, werr := c.writer.Sync(c.cfg.Repositories, c.cfg.Variables, d.Label)
-		line.Written = written
-		if line.Written == nil {
-			line.Written = []string{}
+	}
+	allWritten := true
+	labels := map[string]bool{}
+	for _, rt := range c.routes {
+		rl := routeLine{Name: rt.Name, Variables: rt.Variables}
+		d, err := policy.Decide(rt, states)
+		if err != nil {
+			line.Errors["policy "+rt.Name] = err.Error()
+			allWritten = false
+			line.Routes = append(line.Routes, rl)
+			continue
 		}
-		if werr != nil {
-			line.Errors["write"] = werr.Error()
+		applied := c.state.Routes[rt.Name]
+		d, rl.Held = policy.Hold(d, applied, rt, states, now, c.cfg.Hold())
+		rl.Provider, rl.Label, rl.Reason, rl.Fallback = d.Provider, d.Label, d.Reason, d.Fallback
+		labels[d.Label] = true
+		changed := d.Label != applied.Label || d.Provider != applied.Provider
+		switch {
+		case c.writer == nil:
+			if changed {
+				c.state.Routes[rt.Name] = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
+			}
+		case write:
+			written, werr := c.writer.Sync(c.cfg.Repositories, rt.Variables, d.Label)
+			rl.Written = written
+			if rl.Written == nil {
+				rl.Written = []string{}
+			}
+			if werr != nil {
+				line.Errors["write "+rt.Name] = werr.Error()
+				allWritten = false
+			}
+			// A partial write still moves jobs, so it starts the hold for the new label.
+			if changed && (werr == nil || len(written) > 0) {
+				c.state.Routes[rt.Name] = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
+			}
 		}
-		// A partial write still moves jobs, so it starts the hold for the new label.
-		if (werr == nil || len(written) > 0) && (d.Label != c.state.Label || d.Provider != c.state.Provider) {
-			c.state.Applied = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
-		}
-		// Runs move only once every variable holds the new label, so a rerun job reads it.
-		if werr == nil {
+		line.Routes = append(line.Routes, rl)
+	}
+	if write {
+		// Runs move only once every variable holds its new label, so a rerun job reads it.
+		if allWritten {
 			var merr error
 			checkpoint := func() error { return apply.SaveState(c.appliedPath, c.state) }
-			line.Cancelled, line.Rerun, merr = c.writer.Move(&c.state, c.stuck(d.Label, r), now, checkpoint)
+			line.Cancelled, line.Rerun, merr = c.writer.Move(&c.state, c.stuck(labels, states, r), now, checkpoint)
 			if merr != nil {
 				line.Errors["move"] = merr.Error()
 			}
 		}
+	}
+	if c.writer != nil {
 		if err := apply.SaveState(c.appliedPath, c.state); err != nil {
 			line.Errors["state"] = err.Error()
 		}
-	}
-	if err == nil {
-		line.Provider, line.Label, line.Reason, line.Fallback = d.Provider, d.Label, d.Reason, d.Fallback
 	}
 	if len(line.Errors) == 0 {
 		line.Errors = nil
@@ -250,20 +309,145 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	return json.NewEncoder(w).Encode(line)
 }
 
-// stuck returns movable runs queued on self-hosted labels other than label whose
-// provider cannot take jobs now.
-func (c *controller) stuck(label string, r collect.Result) []collect.Run {
-	var runs []collect.Run
+// adjust adds what the controller remembers to the observed states: operator
+// overrides and the stall latch of on-demand providers. Problems reading
+// overrides are reported in errs and leave every provider enabled.
+func (c *controller) adjust(now time.Time, observed map[string]policy.State, errs map[string]string) map[string]policy.State {
+	var disabled map[string]string
+	if c.overridesPath != "" {
+		set, err := override.Load(c.overridesPath)
+		if err != nil {
+			errs["overrides"] = err.Error()
+		}
+		disabled = set.Active(now)
+	}
+	if c.state.Stalled == nil {
+		c.state.Stalled = map[string]time.Time{}
+	}
+	states := make(map[string]policy.State, len(observed))
 	for _, p := range c.providers {
-		if p.Kind != policy.SelfHosted || p.Label == label {
+		s, ok := observed[p.Name]
+		if !ok {
 			continue
 		}
-		if ok, _, err := policy.Usable(p, r.States[p.Name]); err != nil || ok {
+		if p.OnDemand {
+			switch {
+			case s.Online:
+				delete(c.state.Stalled, p.Name)
+			case s.OldestQueued > p.MaxQueueWait:
+				c.state.Stalled[p.Name] = now
+			}
+			if at, ok := c.state.Stalled[p.Name]; ok {
+				if now.Sub(at) < p.RetryAfter {
+					s.Stalled = true
+				} else {
+					delete(c.state.Stalled, p.Name)
+				}
+			}
+		}
+		s.Disabled = disabled[p.Name]
+		states[p.Name] = s
+	}
+	return states
+}
+
+// stuck returns movable runs queued on self-hosted labels that no route chose
+// whose provider cannot take jobs now.
+func (c *controller) stuck(chosen map[string]bool, states map[string]policy.State, r collect.Result) []collect.Run {
+	var runs []collect.Run
+	for _, p := range c.providers {
+		if p.Kind != policy.SelfHosted || chosen[p.Label] {
+			continue
+		}
+		s, ok := states[p.Name]
+		if !ok {
+			continue
+		}
+		if usable, _, err := policy.Usable(p, s); err != nil || usable {
 			continue
 		}
 		runs = append(runs, r.Movable[p.Name]...)
 	}
 	return runs
+}
+
+func disable(args []string, now time.Time) error {
+	fs := flag.NewFlagSet("disable", flag.ExitOnError)
+	cfgPath := fs.String("config", "zerobill.yaml", "routing policy, to check the provider name")
+	overridesPath := fs.String("overrides", "zerobill-overrides.json", "providers disabled with zerobill disable")
+	dur := fs.Duration("for", 0, "how long to disable; 0 disables until zerobill enable")
+	name, err := providerArg(fs, args)
+	if err != nil {
+		return err
+	}
+	if *dur < 0 {
+		return errors.New("--for must not be negative")
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(cfg.Providers, func(p config.Provider) bool { return p.Name == name }) {
+		return fmt.Errorf("provider %q is not in %s", name, *cfgPath)
+	}
+	set, err := override.Load(*overridesPath)
+	if err != nil {
+		return err
+	}
+	if set.Disabled == nil {
+		set.Disabled = map[string]override.Entry{}
+	}
+	e := override.Entry{Since: now}
+	if *dur > 0 {
+		e.Until = now.Add(*dur)
+	}
+	set.Disabled[name] = e
+	if err := override.Save(*overridesPath, set); err != nil {
+		return err
+	}
+	fmt.Println(set.Active(now)[name] + ": " + name)
+	return nil
+}
+
+func enable(args []string) error {
+	fs := flag.NewFlagSet("enable", flag.ExitOnError)
+	overridesPath := fs.String("overrides", "zerobill-overrides.json", "providers disabled with zerobill disable")
+	name, err := providerArg(fs, args)
+	if err != nil {
+		return err
+	}
+	set, err := override.Load(*overridesPath)
+	if err != nil {
+		return err
+	}
+	if _, ok := set.Disabled[name]; !ok {
+		fmt.Println("not disabled: " + name)
+		return nil
+	}
+	delete(set.Disabled, name)
+	if err := override.Save(*overridesPath, set); err != nil {
+		return err
+	}
+	fmt.Println("enabled: " + name)
+	return nil
+}
+
+// providerArg parses flags given before or after the provider name.
+func providerArg(fs *flag.FlagSet, args []string) (string, error) {
+	var name string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
+	}
+	_ = fs.Parse(args)
+	if name == "" && fs.NArg() == 1 {
+		name = fs.Arg(0)
+	} else if fs.NArg() > 0 {
+		return "", errors.New("give exactly one provider name")
+	}
+	if name == "" {
+		return "", errors.New("give a provider name")
+	}
+	return name, nil
 }
 
 func loadConfig(path string) (*config.Config, []policy.Provider, error) {

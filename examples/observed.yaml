@@ -1,7 +1,9 @@
-# A hand-written snapshot: the home PC is off and Blacksmith has used 1,240 minutes.
+# A hand-written snapshot: the home PC is off, so a job has waited 12 minutes, and
+# Blacksmith has used 1,240 minutes.
 providers:
   home:
     online: false
+    oldest_queued: 12m
   blacksmith:
     used_minutes: 1240
   github:

@@ -3,6 +3,7 @@ package policy
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -29,13 +30,25 @@ type Provider struct {
 	// MaxQueueWait marks a self-hosted provider saturated when its oldest queued job
 	// has waited longer. Zero disables the check.
 	MaxQueueWait time.Duration
+	// OnDemand marks a self-hosted provider whose runners are created per job, such
+	// as GARM or Actions Runner Controller pools, so no registered runner is not a
+	// sign of an outage. Only a queue stall marks it unusable.
+	OnDemand bool
+	// RetryAfter is how long an on-demand provider stays unusable after a queue
+	// stall unless a runner with its label comes online.
+	RetryAfter time.Duration
 }
 
-// State is what collectors observed about one provider.
+// State is what collectors observed about one provider, plus what the controller
+// remembers about it.
 type State struct {
 	Online       bool
 	UsedMinutes  float64
 	OldestQueued time.Duration
+	// Stalled is set while an on-demand provider is inside RetryAfter of a queue stall.
+	Stalled bool
+	// Disabled holds the operator's reason for taking the provider out of rotation.
+	Disabled string
 }
 
 // Decision is the label to write and why.
@@ -53,15 +66,24 @@ func (p Provider) Remaining(s State) float64 {
 
 // Usable reports whether p can take jobs in state s and why.
 func Usable(p Provider, s State) (bool, string, error) {
+	if s.Disabled != "" {
+		return false, s.Disabled, nil
+	}
 	switch p.Kind {
 	case SelfHosted:
-		if !s.Online {
-			return false, "offline", nil
-		}
 		if p.MaxQueueWait > 0 && s.OldestQueued > p.MaxQueueWait {
 			return false, fmt.Sprintf("queue waited %s", s.OldestQueued.Round(time.Second)), nil
 		}
-		return true, "online", nil
+		if s.Online {
+			return true, "online", nil
+		}
+		if !p.OnDemand {
+			return false, "offline", nil
+		}
+		if s.Stalled {
+			return false, "no runner since a queue stall", nil
+		}
+		return true, "on demand, no queue stall", nil
 	case Metered:
 		left := p.Remaining(s)
 		if left <= 0 {
@@ -73,11 +95,33 @@ func Usable(p Provider, s State) (bool, string, error) {
 	}
 }
 
-// Decide returns the first usable provider. When none is usable it returns the
-// fallback provider so jobs queue instead of spending money.
-func Decide(providers []Provider, states map[string]State, fallback string) (Decision, error) {
+// Balance chooses between usable metered providers of a route.
+type Balance string
+
+const (
+	// Order takes the first usable provider.
+	Order Balance = "order"
+	// Pace takes, among the usable metered providers, the one that has used the
+	// smallest share of its minutes above the reserve, so all of them last the month.
+	Pace Balance = "pace"
+)
+
+// Route is one set of variables and the providers that may serve them, in priority order.
+type Route struct {
+	Name      string
+	Variables []string
+	Providers []Provider
+	// Fallback is chosen when no provider is usable, so jobs queue instead of
+	// spending money. It need not be one of Providers.
+	Fallback Provider
+	Balance  Balance
+}
+
+// Decide returns the first usable provider of the route, balanced by its Balance.
+// When none is usable it returns the route's fallback.
+func Decide(rt Route, states map[string]State) (Decision, error) {
 	var skipped []string
-	for _, p := range providers {
+	for _, p := range rt.Providers {
 		s, ok := states[p.Name]
 		if !ok {
 			skipped = append(skipped, p.Name+": no observation")
@@ -91,14 +135,35 @@ func Decide(providers []Provider, states map[string]State, fallback string) (Dec
 			skipped = append(skipped, p.Name+": "+why)
 			continue
 		}
+		if p.Kind == Metered && rt.Balance == Pace {
+			p, why = paced(rt.Providers, states)
+		}
 		return Decision{Provider: p.Name, Label: p.Label, Reason: reason(why, skipped)}, nil
 	}
+	return Decision{Provider: rt.Fallback.Name, Label: rt.Fallback.Label, Reason: reason("no free capacity, jobs queue", skipped), Fallback: true}, nil
+}
+
+// paced returns the usable metered provider with the smallest used share of its
+// minutes above the reserve. Callers ensure at least one is usable.
+func paced(providers []Provider, states map[string]State) (Provider, string) {
+	var best Provider
+	bestShare := -1.0
+	var shares []string
 	for _, p := range providers {
-		if p.Name == fallback {
-			return Decision{Provider: p.Name, Label: p.Label, Reason: reason("no free capacity, jobs queue", skipped), Fallback: true}, nil
+		s, ok := states[p.Name]
+		if !ok || p.Kind != Metered {
+			continue
+		}
+		if usable, _, err := Usable(p, s); err != nil || !usable {
+			continue
+		}
+		share := s.UsedMinutes / (p.MonthlyMinutes - p.ReserveMinutes)
+		shares = append(shares, fmt.Sprintf("%s %.0f%%", p.Name, share*100))
+		if bestShare < 0 || share < bestShare {
+			best, bestShare = p, share
 		}
 	}
-	return Decision{}, fmt.Errorf("fallback provider %q is not configured", fallback)
+	return best, "lowest share of free minutes used: " + strings.Join(shares, ", ")
 }
 
 func reason(chosen string, skipped []string) string {
@@ -122,15 +187,14 @@ type Applied struct {
 	Since    time.Time `json:"since"`
 }
 
-// Hold keeps the applied label when d would move back to a higher-priority
-// provider before minHold has passed. A move away from an applied provider that
-// is no longer usable is never held. It returns the decision to apply and
-// whether it was held.
-func Hold(d Decision, applied Applied, providers []Provider, states map[string]State, now time.Time, minHold time.Duration) (Decision, bool) {
+// Hold keeps the applied label when d would move to another provider before
+// minHold has passed. A move away from an applied provider that is no longer
+// usable is never held. It returns the decision to apply and whether it was held.
+func Hold(d Decision, applied Applied, rt Route, states map[string]State, now time.Time, minHold time.Duration) (Decision, bool) {
 	if applied.Label == "" || applied.Label == d.Label || now.Sub(applied.Since) >= minHold {
 		return d, false
 	}
-	for _, p := range providers {
+	for _, p := range append(rt.Providers, rt.Fallback) {
 		if p.Name != applied.Provider || p.Label != applied.Label {
 			continue
 		}
