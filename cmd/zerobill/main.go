@@ -111,29 +111,25 @@ func load(online bool) (*app, error) {
 	if a.org, err = collect.IsOrg(a.gh, cfg.Owner); err != nil {
 		return nil, fmt.Errorf("read owner %s: %w", cfg.Owner, err)
 	}
-	var me struct {
+	var acct struct {
 		Login string `json:"login"`
 		Plan  struct {
 			Name string `json:"name"`
 		} `json:"plan"`
 	}
-	if err := a.gh.Get("/user", &me); err != nil {
-		return nil, fmt.Errorf("read the signed-in user: %w", err)
-	}
-	plan := me.Plan.Name
 	if a.org {
-		var o struct {
-			Plan struct {
-				Name string `json:"name"`
-			} `json:"plan"`
+		// The plan is best effort: only organization owners can read it.
+		_ = a.gh.Get("/orgs/"+cfg.Owner, &acct)
+	} else {
+		if err := a.gh.Get("/user", &acct); err != nil {
+			return nil, fmt.Errorf("read the signed-in user: %w", err)
 		}
-		_ = a.gh.Get("/orgs/"+cfg.Owner, &o)
-		plan = o.Plan.Name
-	} else if !strings.EqualFold(me.Login, cfg.Owner) {
-		return nil, fmt.Errorf("owner %s is a personal account, so zerobill must run as that user, not %s", cfg.Owner, me.Login)
+		if !strings.EqualFold(acct.Login, cfg.Owner) {
+			return nil, fmt.Errorf("owner %s is a personal account, so zerobill must run as that user, not %s", cfg.Owner, acct.Login)
+		}
 	}
 	a.col = &collect.Collector{GH: a.gh, Owner: cfg.Owner, Org: a.org, StatePath: filepath.Join(stateDir, "cache.json")}
-	a.providers, a.routes = build(cfg, includedMinutes(plan))
+	a.providers, a.routes = build(cfg, includedMinutes(acct.Plan.Name))
 	return a, nil
 }
 

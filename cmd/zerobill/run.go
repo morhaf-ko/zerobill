@@ -120,7 +120,10 @@ type observed struct {
 }
 
 func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
-	l := line{Time: now, Apply: c.apply, Observed: map[string]observed{}, Repositories: len(c.repos), Errors: r.Errors}
+	l := line{Time: now, Apply: c.apply, Observed: map[string]observed{}, Repositories: len(c.repos), Errors: map[string]string{}}
+	for k, v := range r.Errors {
+		l.Errors[k] = v
+	}
 	if c.discoverErr != "" {
 		l.Errors["discover"] = c.discoverErr
 	}

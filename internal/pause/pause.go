@@ -4,7 +4,6 @@ package pause
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"time"
 
@@ -14,7 +13,8 @@ import (
 // Set maps a provider to the time its pause ends; a zero time pauses it until resumed.
 type Set map[string]time.Time
 
-// Load reads pauses; a missing file means none.
+// Load reads pauses. A missing or unreadable file means none, so a damaged file
+// cannot stop zerobill from routing.
 func Load(path string) (Set, error) {
 	s := Set{}
 	raw, err := os.ReadFile(path)
@@ -24,8 +24,8 @@ func Load(path string) (Set, error) {
 	if err != nil {
 		return s, err
 	}
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return Set{}, fmt.Errorf("%s: %w", path, err)
+	if json.Unmarshal(raw, &s) != nil {
+		return Set{}, nil
 	}
 	return s, nil
 }
