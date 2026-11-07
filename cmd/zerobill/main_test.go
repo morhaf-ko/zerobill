@@ -125,6 +125,45 @@ func TestSwitchModeAppliesHoldsAndSkips(t *testing.T) {
 	}
 }
 
+func TestSwitchModePartialWriteStartsHold(t *testing.T) {
+	cfg, providers, err := loadConfig("../../examples/zerobill.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Mode = "switch"
+	cfg.Repositories = []string{"acme/ok", "acme/denied"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/denied/"):
+			w.WriteHeader(http.StatusForbidden)
+		case r.Method == http.MethodGet:
+			fmt.Fprint(w, `{"value":"home-ci"}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+	gh := github.New("t")
+	gh.BaseURL = srv.URL
+	ctl := &controller{
+		cfg: cfg, providers: providers, writer: &apply.Writer{GH: gh},
+		appliedPath: filepath.Join(t.TempDir(), "applied.json"),
+		applied:     policy.Applied{Provider: "home", Label: "home-ci", Since: now.Add(-time.Hour)},
+	}
+	var buf bytes.Buffer
+	states := map[string]policy.State{"home": {}, "blacksmith": {UsedMinutes: 100}, "github": {}}
+	if err := ctl.step(&buf, now, collect.Result{States: states}); err != nil {
+		t.Fatal(err)
+	}
+	line := decode(t, &buf)
+	if len(line.Written) != 3 || !strings.Contains(line.Errors["write"], "403") {
+		t.Fatalf("unexpected line %+v", line)
+	}
+	if ctl.applied.Provider != "blacksmith" || !ctl.applied.Since.Equal(now) {
+		t.Fatalf("applied %+v", ctl.applied)
+	}
+}
+
 func decode(t *testing.T, buf *bytes.Buffer) decisionLine {
 	t.Helper()
 	if bytes.Count(buf.Bytes(), []byte("\n")) != 1 {

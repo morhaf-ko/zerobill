@@ -205,10 +205,12 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		}
 		if werr != nil {
 			line.Errors["write"] = werr.Error()
-		} else if d.Label != c.applied.Label || d.Provider != c.applied.Provider {
+		}
+		// A partial write still moves jobs, so it starts the hold for the new label.
+		if (werr == nil || len(written) > 0) && (d.Label != c.applied.Label || d.Provider != c.applied.Provider) {
 			c.applied = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
 			if err := apply.SaveApplied(c.appliedPath, c.applied); err != nil {
-				return err
+				line.Errors["state"] = err.Error()
 			}
 		}
 	}
