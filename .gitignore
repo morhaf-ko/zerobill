@@ -1,1 +1,3 @@
 /zerobill
+.tmp/
+zerobill-state.json

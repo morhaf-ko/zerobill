@@ -13,7 +13,10 @@ import (
 
 // Config is the operator-owned routing policy.
 type Config struct {
-	Mode         string     `yaml:"mode"`
+	Mode string `yaml:"mode"`
+	// Owner is the organization or user whose runners, billing and repositories
+	// the live collectors read.
+	Owner        string     `yaml:"owner"`
 	Repositories []string   `yaml:"repositories"`
 	Variables    []string   `yaml:"variables"`
 	Fallback     string     `yaml:"fallback"`
@@ -103,11 +106,38 @@ func (c *Config) PolicyProviders() ([]policy.Provider, error) {
 
 // Observation is a snapshot of provider state, written by collectors or by hand.
 type Observation struct {
-	Providers map[string]struct {
-		Online       bool    `yaml:"online"`
-		UsedMinutes  float64 `yaml:"used_minutes"`
-		OldestQueued string  `yaml:"oldest_queued"`
-	} `yaml:"providers"`
+	Providers map[string]Observed `yaml:"providers"`
+}
+
+// Observed is one provider's state. Self-hosted providers set Online and
+// OldestQueued; metered providers set UsedMinutes.
+type Observed struct {
+	Online       *bool    `yaml:"online,omitempty" json:"online,omitempty"`
+	UsedMinutes  *float64 `yaml:"used_minutes,omitempty" json:"used_minutes,omitempty"`
+	OldestQueued string   `yaml:"oldest_queued,omitempty" json:"oldest_queued,omitempty"`
+}
+
+// Snapshot converts collected state into the snapshot file format.
+func Snapshot(providers []policy.Provider, states map[string]policy.State) Observation {
+	o := Observation{Providers: map[string]Observed{}}
+	for _, p := range providers {
+		s, ok := states[p.Name]
+		if !ok {
+			continue
+		}
+		var ob Observed
+		if p.Kind == policy.SelfHosted {
+			ob.Online = &s.Online
+			if s.OldestQueued > 0 {
+				ob.OldestQueued = s.OldestQueued.Round(time.Second).String()
+			}
+		} else {
+			used := s.UsedMinutes
+			ob.UsedMinutes = &used
+		}
+		o.Providers[p.Name] = ob
+	}
+	return o
 }
 
 // LoadObservation reads a snapshot file into policy state.
@@ -130,7 +160,14 @@ func LoadObservation(path string) (map[string]policy.State, error) {
 			}
 			q = d
 		}
-		states[name] = policy.State{Online: p.Online, UsedMinutes: p.UsedMinutes, OldestQueued: q}
+		s := policy.State{OldestQueued: q}
+		if p.Online != nil {
+			s.Online = *p.Online
+		}
+		if p.UsedMinutes != nil {
+			s.UsedMinutes = *p.UsedMinutes
+		}
+		states[name] = s
 	}
 	return states, nil
 }

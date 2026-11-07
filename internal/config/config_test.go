@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/morhaf-ko/zerobill/internal/policy"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadExample(t *testing.T) {
@@ -46,5 +49,36 @@ func TestLoadRejects(t *testing.T) {
 				t.Fatalf("expected a path-qualified error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestSnapshotRoundTrip(t *testing.T) {
+	c, err := Load("../../examples/zerobill.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers, err := c.PolicyProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]policy.State{
+		"home":       {Online: true, OldestQueued: 3 * time.Minute},
+		"blacksmith": {Online: true, UsedMinutes: 1240},
+		"github":     {Online: true, UsedMinutes: 0},
+	}
+	raw, err := yaml.Marshal(Snapshot(providers, want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "observed.yaml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadObservation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["home"] != want["home"] || got["blacksmith"].UsedMinutes != 1240 || !strings.Contains(string(raw), "used_minutes: 0") {
+		t.Fatalf("round trip lost state:\n%s", raw)
 	}
 }
