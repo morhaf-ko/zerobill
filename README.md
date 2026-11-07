@@ -9,9 +9,17 @@ jobs on your own hardware when that hardware is online, spills to free hosted mi
 when it is not, and queues instead of spending money when every free tier is used.
 
 It routes by changing repository variables such as `CI_RUNNER`, which workflows read
-in `runs-on: ${{ vars.CI_RUNNER }}`. Workflows stay unchanged, and no extra routing job
-runs: GitHub rounds every job up to a whole minute, so a per-workflow router job would
-spend the minutes zerobill exists to save.
+in `runs-on: ${{ vars.CI_RUNNER }}`. No extra routing job runs: GitHub rounds every job
+up to a whole minute, so a per-workflow router job would spend the minutes zerobill
+exists to save.
+
+- **Routes** give different work different providers: your own pushes go to your
+  hardware first, while dependency bots such as Renovate use only the free tiers.
+- **Pace balancing** spreads jobs across several free tiers by the share of each one
+  already used, so every tier lasts the month.
+- **On-demand runners** from GARM or Actions Runner Controller count as down only when
+  a job waits too long, not because no runner is registered between jobs.
+- **`zerobill disable`** takes a provider out of rotation, for example while you travel.
 
 ## Install
 
@@ -25,6 +33,14 @@ gh attestation verify zerobill_<version>_<os>_<arch>.tar.gz --repo morhaf-ko/zer
   --signer-workflow morhaf-ko/zerobill/.github/workflows/release.yml
 ```
 
+Or run the container image for linux/amd64 or linux/arm64, which carries its own
+attestation:
+
+```sh
+gh attestation verify oci://ghcr.io/morhaf-ko/zerobill:<version> --repo morhaf-ko/zerobill \
+  --signer-workflow morhaf-ko/zerobill/.github/workflows/release.yml
+```
+
 Or build it with Go:
 
 ```sh
@@ -33,43 +49,57 @@ go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
 
 ## Quick start
 
-1. Point each job at a variable: `runs-on: ${{ vars.CI_RUNNER }}`.
-2. Copy [`examples/zerobill.yaml`](examples/zerobill.yaml) and list your owner,
-   repositories, variables and providers in priority order. List only private
-   repositories: on a public repository, a pull request from a fork would run on your
-   self-hosted hardware, which
-   [GitHub advises against](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security).
-3. Watch the decisions in dry run for a while. Nothing is written:
+1. Point each job at a variable: `runs-on: ${{ vars.CI_RUNNER }}`. To give dependency
+   bots their own route, choose the variable by actor:
 
-   ```sh
-   export GITHUB_TOKEN=...   # see Token
-   zerobill watch --config zerobill.yaml --interval 5m
+   ```yaml
+   runs-on: ${{ github.actor == 'renovate[bot]' && vars.BOT_RUNNER || vars.CI_RUNNER }}
    ```
 
-4. Set `mode: switch` and run `watch` on an always-on host, for example with the
-   systemd unit in [`examples/zerobill.service`](examples/zerobill.service).
+2. Copy [`examples/zerobill.yaml`](examples/zerobill.yaml) and list your owner,
+   repositories, providers and routes. List only private repositories: on a public
+   repository, a pull request from a fork would run on your self-hosted hardware, which
+   [GitHub advises against](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security).
+3. Run it on an always-on machine such as a Raspberry Pi, NAS or small VPS with
+   [`examples/compose.yaml`](examples/compose.yaml):
+
+   ```sh
+   docker compose up -d
+   docker compose logs -f zerobill   # one JSON decision per interval
+   ```
+
+   Without Docker, run `zerobill watch --config zerobill.yaml` under the systemd unit
+   in [`examples/zerobill.service`](examples/zerobill.service).
+4. Read the decisions in `dry-run`, then set `mode: switch` and restart to let it write.
 
 ## Status
 
 Milestones 1 and 2 are done: live collectors, dry run, variable switching with a
-minimum hold, and moving jobs stuck on an unusable self-hosted label. Monthly reports
-come next; see [the design](docs/design.md).
+minimum hold, moving jobs stuck on an unusable self-hosted label, routes, pace
+balancing, on-demand runners and operator overrides. Monthly reports come next; see
+[the design](docs/design.md).
 
 ## How it decides
 
-Providers are tried in the order you list them:
+Each route tries its providers in the order it lists them:
 
-1. A self-hosted provider is used while it is online and its oldest queued job has
-   waited less than `max_queue_wait`.
+1. A self-hosted provider is used while its oldest queued job has waited less than
+   `max_queue_wait` and a runner with its label is online. With `on_demand: true` no
+   online runner is needed; a stall marks it down for `retry_after` (default `1h`) or
+   until a runner comes online.
 2. A metered provider is used while its used minutes stay below
    `monthly_minutes - reserve_minutes`. The reserve stops a switch onto a tier that
-   would run dry mid-job.
-3. When nothing qualifies, the `fallback` provider is selected and jobs queue.
+   would run dry mid-job. With `balance: pace`, the route takes the usable metered
+   provider that has used the smallest share of those minutes.
+   Within `min_hold` the applied provider is kept, so paced providers swap at most
+   once per hold.
+3. A provider disabled with `zerobill disable` is skipped.
+4. When nothing qualifies, the route's `fallback` provider is selected and jobs queue.
 
-In switch mode a label stays applied for at least `min_hold` (default `15m`) before
-moving back to a higher-priority provider, so a runner that flaps online does not
-bounce every queued job. Moving off a provider that went offline, saturated or reached
-its reserve happens on the next interval.
+A route's label stays applied for at least `min_hold` (default `15m`) before moving to
+another usable provider, so a runner that flaps online does not bounce every queued
+job. Moving off a provider that went down or reached its reserve happens on the next
+interval.
 
 ## Try a decision
 
@@ -79,10 +109,25 @@ zerobill plan --config examples/zerobill.yaml --observed examples/observed.yaml
 
 ```text
 mode: dry-run
-decision: blacksmith -> blacksmith-2vcpu-ubuntu-2404
-reason: 1460 free minutes above reserve (skipped home: offline)
-would set CI_RUNNER, RELEASE_RUNNER, LIGHT_RUNNER on your-org/your-app to blacksmith-2vcpu-ubuntu-2404
+route ci: github -> ubuntu-24.04
+  reason: lowest share of free minutes used: blacksmith 46%, github 17% (skipped home: queue waited 12m0s)
+  would set CI_RUNNER, RELEASE_RUNNER, LIGHT_RUNNER on your-org/your-app to ubuntu-24.04
+route bot: github -> ubuntu-24.04
+  reason: lowest share of free minutes used: blacksmith 46%, github 17%
+  would set BOT_RUNNER on your-org/your-app to ubuntu-24.04
 ```
+
+## Take a provider out of rotation
+
+```sh
+zerobill disable home --for 72h   # until zerobill enable home without --for
+zerobill enable home
+```
+
+The override is kept in `--overrides` (default `zerobill-overrides.json`), and a running
+`watch` reads it on its next interval. In switch mode, runs queued on a disabled
+self-hosted label are moved like runs on a stalled one. With Compose, prefix the
+commands with `docker compose exec zerobill`.
 
 ## Live state
 
@@ -107,23 +152,24 @@ zerobill watch --config zerobill.yaml --interval 5m
 
 ## Switching
 
-Set `mode: switch` to let `watch` write. On each interval it reads every variable in
-`variables` from every repository in `repositories`, and creates or updates only those
-that differ from the chosen label, so a manual edit is corrected on the next interval.
-An interval in which any collector failed writes nothing. The last applied label and
-its time are kept in `--applied` (default `zerobill-applied.json`) for the hold.
+Set `mode: switch` to let `watch` write. On each interval it reads every route variable
+from every repository in `repositories`, and creates or updates only those that differ
+from the route's chosen label, so a manual edit is corrected on the next interval. An
+interval in which any collector failed writes nothing. Each route's applied label and
+its time, and the stalls of on-demand providers, are kept in `--applied` (default
+`zerobill-applied.json`).
 
 `runs-on` is read when a job is queued, so a job already waiting on a self-hosted label
 keeps it after the variable changes. Once every variable holds the new label, `watch`
-cancels runs with a job queued on a self-hosted label whose provider is offline or
-saturated, and on the next interval reruns their failed and cancelled jobs, which read
+cancels runs with a job queued on a self-hosted label that no route chose and whose
+provider is down, saturated or disabled, and on the next interval reruns their failed and cancelled jobs, which read
 the new label. A run is moved only when every queued job is on that label, no job has
 started and no finished job failed or was cancelled, so nothing else is stopped or
 repeated. Each run moves at most once. Jobs queued on the `fallback` label while nothing has
 free capacity stay queued.
 
-Each log line lists the variables it changed under `written` and the runs it moved
-under `cancelled` and `rerun`.
+Each log line lists every route's decision with the variables it changed under
+`written`, and the runs it moved under `cancelled` and `rerun`.
 
 ## Token
 
@@ -143,14 +189,19 @@ covers everything. With the GitHub CLI: `gh auth refresh -s user` adds the scope
 | Key | Meaning |
 | --- | --- |
 | `mode` | `dry-run` (default) logs decisions; `switch` lets `watch` write. |
-| `min_hold` | Minimum time a label stays before moving back to a higher-priority provider. Default `15m`. |
+| `min_hold` | Minimum time a route's label stays before moving to another usable provider. Default `15m`. |
 | `owner` | Organization or user whose runners, billing and repositories are read. |
 | `repositories` | `owner/name` list whose variables are written and whose queues are watched. |
-| `variables` | Repository variables set to the chosen label. |
-| `fallback` | Provider chosen when none has free capacity; jobs queue there. |
+| `fallback` | Default provider chosen when nothing in a route has free capacity; jobs queue there. |
 | `providers[].kind` | `self-hosted` or `metered`. |
-| `providers[].max_queue_wait` | Self-hosted only: queue age at which the provider counts as saturated. |
+| `providers[].max_queue_wait` | Self-hosted only: queue age at which the provider counts as down or saturated. |
+| `providers[].on_demand`, `retry_after` | Self-hosted only: runners are created per job, so only a queue stall marks the provider down, for `retry_after` (default `1h`). |
 | `providers[].monthly_minutes`, `reserve_minutes` | Metered only: free minutes per month and the part kept back. |
+| `routes[].name`, `variables` | A route and the repository variables it sets. Each variable belongs to one route. |
+| `routes[].providers` | Provider names the route may use, in priority order. |
+| `routes[].balance` | `order` (default) takes the first usable provider; `pace` spreads metered providers by the share of free minutes used. |
+| `routes[].fallback` | Overrides the top-level `fallback` for this route. |
+| `variables` | Without `routes`: the variables of a single route over every provider. |
 
 ## Scope
 

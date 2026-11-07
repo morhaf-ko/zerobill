@@ -63,9 +63,13 @@ func (w *Writer) set(repo, name, label string) (bool, error) {
 	}
 }
 
-// State is what switch mode keeps between intervals.
+// State is what watch keeps between intervals; switch mode persists it.
 type State struct {
-	policy.Applied
+	// Routes holds the label applied per route, for the minimum hold.
+	Routes map[string]policy.Applied `json:"routes,omitempty"`
+	// Stalled holds when each on-demand provider last had a queue stall with no
+	// runner online.
+	Stalled map[string]time.Time `json:"stalled,omitempty"`
 	// Cancelled holds runs cancelled to leave a stale label, awaiting their rerun.
 	Cancelled map[string]Moved `json:"cancelled,omitempty"`
 	// Rerun holds runs already moved once; they are never moved again, so a job
