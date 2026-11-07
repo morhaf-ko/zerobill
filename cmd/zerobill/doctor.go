@@ -115,7 +115,7 @@ func runDoctor(c *checks, gh *github.Client, cfg *config.Config, providers []pol
 		}
 		var registered, online int
 		for _, r := range runners {
-			if slices.Contains(r.Labels, p.Label) {
+			if slices.Contains(r.All, p.Label) {
 				registered++
 				if r.Online {
 					online++
@@ -146,7 +146,7 @@ func runDoctor(c *checks, gh *github.Client, cfg *config.Config, providers []pol
 			} else {
 				c.pass("provider %s: read GitHub billing usage", p.Name)
 			}
-		case p.Kind == policy.Metered && strings.HasPrefix(p.Label, "blacksmith-"):
+		case p.Kind == policy.SelfHosted || strings.HasPrefix(p.Label, "blacksmith-"):
 			repos, err := col.OwnerRepos()
 			if err != nil {
 				c.failf("provider %s: list repositories: %v; %s", p.Name, err, need("Repository permission Metadata: read on all repositories", "repo"))
@@ -159,9 +159,12 @@ func runDoctor(c *checks, gh *github.Client, cfg *config.Config, providers []pol
 					denied = append(denied, r)
 				}
 			}
-			if len(denied) > 0 {
+			switch {
+			case len(denied) > 0 && p.Kind == policy.SelfHosted:
+				c.warn("provider %s: cannot read runs in %s, so the savings estimate is unknown; %s", p.Name, strings.Join(denied, ", "), need("Repository permission Actions: read on all repositories", "repo"))
+			case len(denied) > 0:
 				c.failf("provider %s: cannot read runs in %s; Blacksmith minutes are summed over every repository, %s", p.Name, strings.Join(denied, ", "), need("Repository permission Actions: read on all repositories", "repo"))
-			} else {
+			default:
 				c.pass("provider %s: read runs in all %d repositories", p.Name, len(repos))
 			}
 		}
@@ -221,10 +224,13 @@ func runDoctor(c *checks, gh *github.Client, cfg *config.Config, providers []pol
 			}
 			slices.Sort(missing)
 			if len(missing) > 0 {
-				c.warn("%s: workflows read %s, which is not set; runs-on is empty until switch mode creates it", repo, strings.Join(missing, ", "))
+				c.warn("%s: workflows read %s, which is not a repository variable; unless an organization variable sets it, runs-on is empty until switch mode creates it", repo, strings.Join(missing, ", "))
 			}
 		}
-		if len(decls) > 0 {
+		switch {
+		case len(decls) > 0 && used == 0:
+			c.warn("%s: none of %d jobs is routed", repo, len(decls))
+		case len(decls) > 0:
 			c.pass("%s: %d of %d jobs are routed", repo, used, len(decls))
 		}
 	}

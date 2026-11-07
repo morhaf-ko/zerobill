@@ -23,20 +23,28 @@ jobs:
   bot:
     runs-on: ${{ github.actor == 'renovate[bot]' && vars.BOT_RUNNER || vars.CI_RUNNER }}
   flow:
-    runs-on: [self-hosted, home-ci]
+    runs-on: [self-hosted,
+      home-ci]
   block:
     runs-on:
+      # the GPU pool
       - self-hosted
       - gpu
     steps:
       - run: echo
+  folded:
+    runs-on: >-
+      ${{ vars.LIGHT_RUNNER }}
   group:
     runs-on:
       group: big
 `
 
 func TestParseRunsOn(t *testing.T) {
-	got := setup.ParseRunsOn("ci.yml", workflow)
+	got, err := setup.ParseRunsOn("ci.yml", workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []struct {
 		line   int
 		labels []string
@@ -46,8 +54,9 @@ func TestParseRunsOn(t *testing.T) {
 		{7, nil, []string{"CI_RUNNER"}},
 		{9, nil, []string{"BOT_RUNNER", "CI_RUNNER"}},
 		{11, []string{"self-hosted", "home-ci"}, nil},
-		{13, []string{"self-hosted", "gpu"}, nil},
-		{19, nil, nil},
+		{14, []string{"self-hosted", "gpu"}, nil},
+		{21, nil, []string{"LIGHT_RUNNER"}},
+		{24, nil, nil},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d declarations: %+v", len(got), got)
@@ -58,8 +67,11 @@ func TestParseRunsOn(t *testing.T) {
 			t.Errorf("declaration %d: got line %d labels %v vars %v (%q)", i, g.Line, g.Labels, g.Vars, g.Value)
 		}
 	}
-	if got[5].Value != "group: big" {
-		t.Errorf("group value %q", got[5].Value)
+	if got[6].Value != "group: big" {
+		t.Errorf("group value %q", got[6].Value)
+	}
+	if _, err := setup.ParseRunsOn("bad.yml", "jobs: [unclosed"); err == nil {
+		t.Error("invalid YAML parsed without an error")
 	}
 }
 
@@ -106,6 +118,7 @@ func TestTokenURL(t *testing.T) {
 	}
 	q := u.Query()
 	if q.Get("target_name") != "acme" || q.Get("actions") != "read" || q.Get("actions_variables") != "read" ||
+		q.Get("contents") != "read" || q.Get("metadata") != "read" ||
 		q.Get("organization_self_hosted_runners") != "read" || q.Get("organization_administration") != "read" || q.Get("plan") != "" {
 		t.Fatalf("organization dry-run token %s", u)
 	}

@@ -40,7 +40,7 @@ const usage = `usage:
   zerobill init --owner OWNER [--out zerobill.yaml] [--force]
   zerobill doctor --config zerobill.yaml
   zerobill plan --config zerobill.yaml --observed observed.yaml
-  zerobill status --config zerobill.yaml [--state zerobill-state.json]
+  zerobill status --config zerobill.yaml [--state zerobill-state.json] [--applied zerobill-applied.json] [--overrides zerobill-overrides.json]
   zerobill observe --config zerobill.yaml [--state zerobill-state.json] [--out observed.yaml]
   zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--applied zerobill-applied.json] [--overrides zerobill-overrides.json] [--interval 5m] [--count 0]
   zerobill disable PROVIDER [--for 72h] [--config zerobill.yaml] [--overrides zerobill-overrides.json]
@@ -137,6 +137,9 @@ func observe(args []string) error {
 	r := c.Observe(providers)
 	if len(r.Errors) > 0 {
 		return fmt.Errorf("collect: %s", joinErrors(r.Errors))
+	}
+	if len(r.Warnings) > 0 {
+		fmt.Fprintln(os.Stderr, "zerobill:", joinErrors(r.Warnings))
 	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)

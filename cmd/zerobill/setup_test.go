@@ -29,14 +29,15 @@ const ciWorkflow = `jobs:
 func fakeGitHub(t *testing.T, denied ...string) *github.Client {
 	t.Helper()
 	routes := map[string]string{
-		"/user":                                      `{"login":"ada","plan":{"name":"free"}}`,
-		"/users/acme":                                `{"type":"Organization"}`,
-		"/orgs/acme":                                 `{"plan":{"name":"team"}}`,
-		"/orgs/acme/repos":                           `[{"full_name":"acme/app","private":true,"archived":false,"owner":{"login":"acme"}},{"full_name":"acme/site","private":true,"archived":false,"owner":{"login":"acme"}}]`,
-		"/orgs/acme/actions/runners":                 `{"runners":[{"status":"online","labels":[{"name":"self-hosted"},{"name":"Linux"},{"name":"home-ci"}]},{"status":"offline","labels":[{"name":"gpu"},{"name":"runner-pool-id=1"}]}]}`,
-		"/repos/acme/app/actions/runs":               `{"workflow_runs":[]}`,
-		"/repos/acme/app/actions/variables":          `{"variables":[{"name":"CI_RUNNER","value":"home-ci"},{"name":"BOT_RUNNER","value":"blacksmith-2vcpu-ubuntu-2404"}]}`,
-		"/repos/acme/app/contents/.github/workflows": `[{"name":"ci.yml","path":".github/workflows/ci.yml","type":"file"}]`,
+		"/user":                                             `{"login":"ada","plan":{"name":"free"}}`,
+		"/users/acme":                                       `{"type":"Organization"}`,
+		"/orgs/acme":                                        `{"plan":{"name":"team"}}`,
+		"/orgs/acme/repos":                                  `[{"full_name":"acme/app","private":true,"archived":false,"owner":{"login":"acme"}},{"full_name":"acme/site","private":true,"archived":false,"owner":{"login":"acme"}}]`,
+		"/orgs/acme/actions/runners":                        `{"runners":[{"status":"online","labels":[{"name":"self-hosted"},{"name":"Linux"},{"name":"home-ci"}]},{"status":"offline","labels":[{"name":"gpu"},{"name":"runner-pool-id=1"}]}]}`,
+		"/repos/acme/app/actions/runs":                      `{"workflow_runs":[]}`,
+		"/repos/acme/site/actions/runs":                     `{"workflow_runs":[]}`,
+		"/repos/acme/app/actions/variables":                 `{"variables":[{"name":"CI_RUNNER","value":"home-ci"},{"name":"BOT_RUNNER","value":"blacksmith-2vcpu-ubuntu-2404"}]}`,
+		"/repos/acme/app/contents/.github/workflows":        `[{"name":"ci.yml","path":".github/workflows/ci.yml","type":"file"}]`,
 		"/repos/acme/app/contents/.github/workflows/ci.yml": fmt.Sprintf(`{"encoding":"base64","content":%q}`, base64.StdEncoding.EncodeToString([]byte(ciWorkflow))),
 		"/organizations/acme/settings/billing/usage":        `{"usageItems":[]}`,
 	}
@@ -75,6 +76,19 @@ func TestDetectDraftsFromWorkflowsAndRunners(t *testing.T) {
 	}
 	if strings.Join(d.Vars, ",") != "CI_RUNNER" || strings.Join(d.BotVars, ",") != "BOT_RUNNER" || len(notes) != 0 {
 		t.Fatalf("draft vars %+v notes %v", d, notes)
+	}
+}
+
+func TestDetectOnDemand(t *testing.T) {
+	// The runners carrying home-ci are not GARM-managed, so it is not on demand.
+	d, _, err := detect(fakeGitHub(t), "acme")
+	if err != nil || d.SelfHosted != "home-ci" || d.OnDemand {
+		t.Fatalf("registered label: %+v %v", d, err)
+	}
+	// An unreadable runner list says nothing about per-job runners.
+	d, notes, err := detect(fakeGitHub(t, "/orgs/acme/actions/runners"), "acme")
+	if err != nil || d.SelfHosted != "home-ci" || d.OnDemand || len(notes) == 0 {
+		t.Fatalf("unreadable runners: %+v %v %v", d, notes, err)
 	}
 }
 

@@ -1,5 +1,5 @@
 # Run zerobill with Docker Compose on any always-on machine:
-#   1. Put your config next to this file as zerobill.yaml (see zerobill.yaml in this folder).
+#   1. Put your config next to this file as zerobill.yaml; zerobill init writes both.
 #   2. Put GITHUB_TOKEN=... in zerobill.env, readable only by you (chmod 600).
 #   3. docker compose up -d; follow decisions with docker compose logs -f zerobill.
 # Take a provider out of rotation, for example while you travel:

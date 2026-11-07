@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/morhaf-ko/zerobill/internal/apply"
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/policy"
 )
@@ -18,6 +19,7 @@ func status(args []string) error {
 	cfgPath := fs.String("config", "zerobill.yaml", "routing policy")
 	statePath := fs.String("state", "zerobill-state.json", "job cache")
 	overridesPath := fs.String("overrides", "zerobill-overrides.json", "providers disabled with zerobill disable")
+	appliedPath := fs.String("applied", "zerobill-applied.json", "watch's state, for on-demand stalls")
 	_ = fs.Parse(args)
 	cfg, providers, err := loadConfig(*cfgPath)
 	if err != nil {
@@ -29,6 +31,9 @@ func status(args []string) error {
 	}
 	r := c.Observe(providers)
 	ctl := &controller{cfg: cfg, providers: providers, routes: cfg.PolicyRoutes(providers), overridesPath: *overridesPath}
+	if ctl.state, err = apply.LoadState(*appliedPath); err != nil {
+		return err
+	}
 	errs := map[string]string{}
 	for k, v := range r.Errors {
 		errs[k] = v

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,9 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/github"
 	"github.com/morhaf-ko/zerobill/internal/setup"
 )
+
+// labelName matches a runner label, leaving out YAML fragments and expressions.
+var labelName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func initConfig(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
@@ -48,6 +52,8 @@ func initConfig(args []string) error {
 			return err
 		}
 		fmt.Printf("wrote %s\n", compose)
+	} else {
+		fmt.Printf("kept the existing %s\n", compose)
 	}
 	fmt.Printf("next: zerobill doctor --config %s, then docker compose up -d\n", *out)
 	return nil
@@ -108,8 +114,8 @@ func detect(gh *github.Client, owner string) (setup.Draft, []string, error) {
 		notes = append(notes, "no workflow reads a runner variable yet; zerobill doctor lists the runs-on lines to change")
 	}
 
-	runners, err := setup.Runners(gh, setup.RunnerPaths(owner, org, d.Repos))
-	if err != nil {
+	runners, runnerErr := setup.Runners(gh, setup.RunnerPaths(owner, org, d.Repos))
+	if err := runnerErr; err != nil {
 		notes = append(notes, fmt.Sprintf("cannot read self-hosted runners (%v); add your runner's label by hand", err))
 	}
 	var registered []string
@@ -120,12 +126,13 @@ func detect(gh *github.Client, owner string) (setup.Draft, []string, error) {
 			managed[l] = managed[l] || r.Managed
 		}
 	}
-	selfHosted := func(l string) bool { return !setup.Hosted(l) && l != "self-hosted" }
+	selfHosted := func(l string) bool { return !setup.Hosted(l) && !setup.IsDefaultLabel(l) && labelName.MatchString(l) }
 	d.SelfHosted = setup.MostCommon(labels, func(l string) bool { return selfHosted(l) && slices.Contains(registered, l) })
 	if d.SelfHosted == "" {
-		// Workflows use a label no runner carries now: a pool that creates runners per job.
+		// Workflows use a label no runner carries now: a pool that creates runners
+		// per job, unless the runners could not be read at all.
 		d.SelfHosted = setup.MostCommon(labels, selfHosted)
-		d.OnDemand = d.SelfHosted != ""
+		d.OnDemand = d.SelfHosted != "" && runnerErr == nil
 	} else {
 		d.OnDemand = managed[d.SelfHosted]
 	}
@@ -136,13 +143,17 @@ func detect(gh *github.Client, owner string) (setup.Draft, []string, error) {
 	if l := setup.MostCommon(labels, func(l string) bool { return strings.HasPrefix(l, "ubuntu-") }); l != "" {
 		d.GitHub = l
 	}
-	d.GitHubMinutes = includedMinutes(gh, owner, org)
+	var known bool
+	d.GitHubMinutes, known = includedMinutes(gh, owner, org)
+	if !known {
+		notes = append(notes, "could not read the GitHub plan; assumed GitHub Free's 2000 included minutes")
+	}
 	return d, notes, nil
 }
 
-// includedMinutes returns the plan's included Linux minutes: GitHub Free $12,
-// Pro and Team $18 at $0.006 a minute. Unknown plans assume Free.
-func includedMinutes(gh *github.Client, owner string, org bool) float64 {
+// includedMinutes returns the plan's included Linux minutes, GitHub Free $12 and
+// Pro and Team $18 at $0.006 a minute, and whether the plan was read.
+func includedMinutes(gh *github.Client, owner string, org bool) (float64, bool) {
 	var acct struct {
 		Plan struct {
 			Name string `json:"name"`
@@ -153,12 +164,14 @@ func includedMinutes(gh *github.Client, owner string, org bool) float64 {
 		path = "/orgs/" + owner
 	}
 	if gh.Get(path, &acct) != nil {
-		return 2000
+		return 2000, false
 	}
 	switch strings.ToLower(acct.Plan.Name) {
 	case "pro", "team":
-		return 3000
+		return 3000, true
+	case "free":
+		return 2000, true
 	default:
-		return 2000
+		return 2000, false
 	}
 }

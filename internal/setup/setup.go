@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/morhaf-ko/zerobill/internal/github"
+	"gopkg.in/yaml.v3"
 )
 
 // RunsOn is one runs-on declaration in a workflow file.
@@ -26,67 +27,80 @@ type RunsOn struct {
 	Vars   []string
 }
 
-var (
-	runsOnKey = regexp.MustCompile(`^(\s*)runs-on:\s*(.*)$`)
-	varRef    = regexp.MustCompile(`vars\.([A-Za-z0-9_]+)`)
-)
+var varRef = regexp.MustCompile(`vars\.([A-Za-z0-9_]+)`)
 
-// ParseRunsOn finds runs-on declarations in a workflow file: inline values, flow
-// lists and block lists. A group or label map is reported with its keys as Value.
-func ParseRunsOn(path, text string) []RunsOn {
-	lines := strings.Split(text, "\n")
+// ParseRunsOn returns the runs-on declaration of every job in a workflow file. A
+// runner group or label map is reported with its keys in Value and no Labels.
+func ParseRunsOn(path, text string) ([]RunsOn, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if len(doc.Content) == 0 {
+		return nil, nil
+	}
 	var out []RunsOn
-	for i := 0; i < len(lines); i++ {
-		m := runsOnKey.FindStringSubmatch(lines[i])
-		if m == nil {
+	jobs := child(doc.Content[0], "jobs")
+	if jobs == nil || jobs.Kind != yaml.MappingNode {
+		return nil, nil
+	}
+	for i := 1; i < len(jobs.Content); i += 2 {
+		job := jobs.Content[i]
+		if job.Kind != yaml.MappingNode {
 			continue
 		}
-		indent, value := len(m[1]), stripComment(m[2])
-		var items []string
-		if value == "" {
-			for j := i + 1; j < len(lines); j++ {
-				l := lines[j]
-				if strings.TrimSpace(l) == "" {
-					continue
-				}
-				if leading(l) <= indent && !strings.HasPrefix(strings.TrimSpace(l), "- ") {
-					break
-				}
-				if leading(l) < indent {
-					break
-				}
-				items = append(items, strings.TrimPrefix(stripComment(strings.TrimSpace(l)), "- "))
-			}
-			value = strings.Join(items, ", ")
-		} else if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
-			for _, it := range strings.Split(strings.Trim(value, "[]"), ",") {
-				items = append(items, strings.TrimSpace(it))
-			}
-		} else {
-			items = []string{value}
-		}
-		r := RunsOn{Path: path, Line: i + 1, Value: value}
-		for _, it := range items {
-			it = strings.Trim(it, `"'`)
-			for _, v := range varRef.FindAllStringSubmatch(it, -1) {
-				r.Vars = append(r.Vars, v[1])
-			}
-			if it != "" && !strings.Contains(it, "${{") && !strings.Contains(it, ":") {
-				r.Labels = append(r.Labels, it)
+		for k := 0; k < len(job.Content); k += 2 {
+			if job.Content[k].Value == "runs-on" {
+				out = append(out, runsOn(path, job.Content[k].Line, job.Content[k+1]))
 			}
 		}
-		out = append(out, r)
 	}
-	return out
+	return out, nil
 }
 
-func leading(s string) int { return len(s) - len(strings.TrimLeft(s, " \t")) }
-
-func stripComment(s string) string {
-	if i := strings.Index(s, " #"); i >= 0 {
-		s = s[:i]
+func child(n *yaml.Node, key string) *yaml.Node {
+	if n.Kind != yaml.MappingNode {
+		return nil
 	}
-	return strings.TrimSpace(s)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func runsOn(path string, line int, v *yaml.Node) RunsOn {
+	r := RunsOn{Path: path, Line: line}
+	var parts []string
+	switch v.Kind {
+	case yaml.ScalarNode:
+		parts = []string{v.Value}
+		r.Labels = literal(v.Value)
+	case yaml.SequenceNode:
+		for _, it := range v.Content {
+			parts = append(parts, it.Value)
+			r.Labels = append(r.Labels, literal(it.Value)...)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(v.Content); i += 2 {
+			parts = append(parts, v.Content[i].Value+": "+v.Content[i+1].Value)
+		}
+	}
+	r.Value = strings.Join(parts, ", ")
+	for _, m := range varRef.FindAllStringSubmatch(r.Value, -1) {
+		r.Vars = append(r.Vars, m[1])
+	}
+	return r
+}
+
+// literal returns s as a runner label unless it is an expression.
+func literal(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.Contains(s, "${{") {
+		return nil
+	}
+	return []string{s}
 }
 
 // Workflows returns the runs-on declarations of every workflow in repo. A
@@ -120,7 +134,11 @@ func Workflows(gh *github.Client, repo string) ([]RunsOn, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s/%s: %w", repo, f.Path, err)
 		}
-		out = append(out, ParseRunsOn(f.Path, string(raw))...)
+		decls, err := ParseRunsOn(f.Path, string(raw))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", repo, err)
+		}
+		out = append(out, decls...)
 	}
 	return out, nil
 }
@@ -154,8 +172,9 @@ func Variables(gh *github.Client, repo string) (map[string]string, error) {
 // Runner is a registered self-hosted runner.
 type Runner struct {
 	Online bool
-	// Labels are the runner's routing labels; GitHub's defaults such as
-	// self-hosted, Linux and X64 and key=value metadata labels are left out.
+	// All holds every label as GitHub reports it; Labels leaves out GitHub's
+	// defaults such as self-hosted, Linux and X64 and key=value metadata labels.
+	All    []string
 	Labels []string
 	// Managed is set for runners a manager creates per job, recognised by GARM's
 	// runner-pool-id metadata label.
@@ -164,6 +183,12 @@ type Runner struct {
 
 // defaultLabels are the labels GitHub adds to every self-hosted runner.
 var defaultLabels = []string{"self-hosted", "linux", "windows", "macos", "x64", "arm", "arm64"}
+
+// IsDefaultLabel reports whether label is one GitHub adds to every self-hosted
+// runner, or key=value metadata, so it cannot name one pool.
+func IsDefaultLabel(label string) bool {
+	return strings.Contains(label, "=") || slices.Contains(defaultLabels, strings.ToLower(label))
+}
 
 // Runners lists self-hosted runners at paths, organization or repository level.
 func Runners(gh *github.Client, paths []string) ([]Runner, error) {
@@ -184,11 +209,11 @@ func Runners(gh *github.Client, paths []string) ([]Runner, error) {
 			for _, r := range page.Runners {
 				rr := Runner{Online: r.Status == "online"}
 				for _, l := range r.Labels {
+					rr.All = append(rr.All, l.Name)
 					switch {
 					case strings.HasPrefix(l.Name, "runner-pool-id="):
 						rr.Managed = true
-					case strings.Contains(l.Name, "="), slices.Contains(defaultLabels, strings.ToLower(l.Name)):
-					default:
+					case !IsDefaultLabel(l.Name):
 						rr.Labels = append(rr.Labels, l.Name)
 					}
 				}
