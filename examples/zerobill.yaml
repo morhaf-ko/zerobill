@@ -1,0 +1,22 @@
+# Providers are tried in order. Self-hosted hardware first, metered free tiers after.
+mode: dry-run
+repositories:
+  - your-org/your-app
+variables: [CI_RUNNER, RELEASE_RUNNER, LIGHT_RUNNER]
+# When nothing has free capacity, jobs queue here instead of spending money.
+fallback: home
+providers:
+  - name: home
+    label: home-ci
+    kind: self-hosted
+    max_queue_wait: 10m
+  - name: blacksmith
+    label: blacksmith-2vcpu-ubuntu-2404
+    kind: metered
+    monthly_minutes: 3000
+    reserve_minutes: 300
+  - name: github
+    label: ubuntu-24.04
+    kind: metered
+    monthly_minutes: 2000
+    reserve_minutes: 200

@@ -1,0 +1,8 @@
+# A hand-written snapshot: the home PC is off and Blacksmith has used 1,240 minutes.
+providers:
+  home:
+    online: false
+  blacksmith:
+    used_minutes: 1240
+  github:
+    used_minutes: 310
