@@ -123,7 +123,7 @@ func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time, checkpoint 
 				st.Rerun[k] = Moved{Run: m.Run, At: now}
 				rerun = append(rerun, k)
 				if err := checkpoint(); err != nil {
-					return cancelled, rerun, err
+					return cancelled, rerun, errors.Join(append(errs, err)...)
 				}
 				continue
 			}
@@ -166,7 +166,8 @@ func (w *Writer) Move(st *State, stuck []collect.Run, now time.Time, checkpoint 
 		st.Cancelled[k] = Moved{Run: r, At: now}
 		cancelled = append(cancelled, k)
 		if err := checkpoint(); err != nil {
-			return cancelled, rerun, err
+			sort.Strings(rerun)
+			return cancelled, rerun, errors.Join(append(errs, err)...)
 		}
 	}
 	sort.Strings(rerun)
