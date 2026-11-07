@@ -401,6 +401,10 @@ func (c *Collector) runsTotal(path string) ([]workflowRun, int, error) {
 			return err
 		}
 		total = page.TotalCount
+		if total > runSearchCap {
+			// Callers reject or split a capped query, so later pages are wasted requests.
+			return github.ErrStop
+		}
 		runs = append(runs, page.WorkflowRuns...)
 		return nil
 	})
