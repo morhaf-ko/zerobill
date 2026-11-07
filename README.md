@@ -28,6 +28,28 @@ to the best free runner, which your workflows read with
 `runs-on: ${{ vars.CI_RUNNER }}`. And it reruns jobs that were already stuck on your
 runner when it went down, on the new runner.
 
+With your runner off, `zerobill status` shows where jobs go and how long each free tier
+lasts:
+
+```text
+$ zerobill status
+your-org, 7 Nov 21:30 UTC, 23% of the month gone
+
+RUNNER      LABEL                         STATE                   USED      FREE      MONTH END AT THIS PACE
+runner      home-ci                       offline                 -         -         -
+blacksmith  blacksmith-2vcpu-ubuntu-2404  1570 free minutes left  1130 min  1570 min  4916 min, runs out 17 Nov
+github      ubuntu-latest                 850 free minutes left   950 min   850 min   4133 min, runs out 14 Nov
+
+VARIABLE    USE                           WHY
+CI_RUNNER   blacksmith-2vcpu-ubuntu-2404  least used free tier: blacksmith 42%, github 53% (skipped runner: offline)
+BOT_RUNNER  blacksmith-2vcpu-ubuntu-2404  least used free tier: blacksmith 42%, github 53%
+
+Repositories: 7 read CI_RUNNER or BOT_RUNNER.
+
+Problems:
+  fixed runner, change to ${{ vars.CI_RUNNER }}: your-org/api .github/workflows/release.yml:12: ubuntu-latest
+```
+
 ## Install
 
 ```sh
