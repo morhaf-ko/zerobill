@@ -3,23 +3,34 @@ package collect
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 
 	"github.com/morhaf-ko/zerobill/internal/atomicfile"
 )
 
-// state caches Blacksmith minutes for one calendar month (UTC).
+// stateVersion changes whenever the cache layout does; an older cache is rebuilt.
+const stateVersion = 2
+
+// state caches this month's (UTC) completed jobs.
 type state struct {
-	Month string `json:"month"`
-	// Jobs maps a completed job id to its billed minutes, zero for other labels.
-	Jobs map[string]float64 `json:"jobs"`
+	Version int    `json:"version"`
+	Month   string `json:"month"`
+	// Jobs maps a completed job id to its runner labels and wall-clock minutes,
+	// rounded up. Jobs that never reached a runner record zero minutes.
+	Jobs map[string]jobRecord `json:"jobs"`
 	// Runs marks run attempts ("id/attempt") whose jobs are all completed and cached.
 	Runs map[string]bool `json:"runs"`
 }
 
+type jobRecord struct {
+	Labels  []string `json:"l,omitempty"`
+	Minutes float64  `json:"m"`
+}
+
+// loadState returns the cache for month; a missing, older or unreadable cache
+// starts empty, since every entry can be fetched again.
 func loadState(path, month string) (*state, error) {
-	fresh := &state{Month: month, Jobs: map[string]float64{}, Runs: map[string]bool{}}
+	fresh := &state{Version: stateVersion, Month: month, Jobs: map[string]jobRecord{}, Runs: map[string]bool{}}
 	if path == "" {
 		return fresh, nil
 	}
@@ -31,14 +42,11 @@ func loadState(path, month string) (*state, error) {
 		return nil, err
 	}
 	var s state
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if s.Month != month {
+	if json.Unmarshal(raw, &s) != nil || s.Version != stateVersion || s.Month != month {
 		return fresh, nil
 	}
 	if s.Jobs == nil {
-		s.Jobs = map[string]float64{}
+		s.Jobs = map[string]jobRecord{}
 	}
 	if s.Runs == nil {
 		s.Runs = map[string]bool{}
@@ -54,5 +62,5 @@ func (s *state) save(path string) error {
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(path, raw)
+	return atomicfile.Write(path, raw, 0o600)
 }

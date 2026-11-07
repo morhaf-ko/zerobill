@@ -43,6 +43,9 @@ type Result struct {
 	// Movable lists, per self-hosted provider, runs with a job queued on its label
 	// that can be cancelled and rerun without stopping a started job.
 	Movable map[string][]Run
+	// Warnings report problems that leave routing intact, such as an unknown
+	// savings estimate.
+	Warnings map[string]string
 }
 
 // Run identifies one attempt of a workflow run.
@@ -55,7 +58,12 @@ type Run struct {
 // Observe collects state for each provider. A failed provider is reported in
 // Result.Errors and left out of Result.States, so the policy skips it.
 func (c *Collector) Observe(providers []policy.Provider) Result {
-	r := Result{States: map[string]policy.State{}, Errors: map[string]string{}, Movable: map[string][]Run{}}
+	r := Result{States: map[string]policy.State{}, Errors: map[string]string{}, Movable: map[string][]Run{}, Warnings: map[string]string{}}
+	var month *usage
+	var monthErr error
+	if needsMonth(providers) {
+		month, monthErr = c.monthUsage()
+	}
 	for _, p := range providers {
 		var s policy.State
 		var err error
@@ -66,8 +74,18 @@ func (c *Collector) Observe(providers []policy.Provider) Result {
 			if err == nil && len(movable) > 0 {
 				r.Movable[p.Name] = movable
 			}
+			// Served minutes only feed the savings estimate, so a failed scan must
+			// not block routing.
+			if err == nil && monthErr != nil {
+				r.Warnings[p.Name] = "served minutes unknown: " + monthErr.Error()
+			} else if err == nil {
+				s.UsedMinutes = month.onLabel(p.Label)
+			}
 		case p.Kind == policy.Metered && isBlacksmith(p.Label):
-			s, err = c.Blacksmith()
+			err = monthErr
+			if err == nil {
+				s = policy.State{Online: true, UsedMinutes: month.blacksmith()}
+			}
 		case p.Kind == policy.Metered && strings.HasPrefix(p.Label, "ubuntu-"):
 			s, err = c.GitHubHosted()
 		case p.Kind == policy.Metered:
@@ -84,6 +102,17 @@ func (c *Collector) Observe(providers []policy.Provider) Result {
 	return r
 }
 
+// needsMonth reports whether any provider reads this month's job history:
+// Blacksmith for its minutes, self-hosted providers for the savings estimate.
+func needsMonth(providers []policy.Provider) bool {
+	for _, p := range providers {
+		if p.Kind == policy.SelfHosted || (p.Kind == policy.Metered && isBlacksmith(p.Label)) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Collector) now() time.Time {
 	if c.Now != nil {
 		return c.Now().UTC()
@@ -91,7 +120,8 @@ func (c *Collector) now() time.Time {
 	return time.Now().UTC()
 }
 
-func (c *Collector) ownerIsOrg() (bool, error) {
+// OwnerIsOrg reports whether the owner is an organization rather than a user.
+func (c *Collector) OwnerIsOrg() (bool, error) {
 	if c.isOrg != nil {
 		return *c.isOrg, nil
 	}
@@ -129,6 +159,9 @@ type job struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
+	// RunnerName is empty for a job that never reached a runner, such as one
+	// cancelled while queued; its started_at still records queue time.
+	RunnerName string `json:"runner_name"`
 }
 
 // SelfHosted reports a label online when any runner carrying it is online, and
@@ -137,7 +170,7 @@ type job struct {
 // it, no job has started, and no completed job failed or was cancelled, so a
 // rerun of failed jobs reruns only what zerobill cancelled.
 func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
-	org, err := c.ownerIsOrg()
+	org, err := c.OwnerIsOrg()
 	if err != nil {
 		return policy.State{}, nil, err
 	}
@@ -214,7 +247,7 @@ func (c *Collector) SelfHosted(label string) (policy.State, []Run, error) {
 // GitHubHosted sums this month's GitHub-hosted Linux minutes from the billing
 // usage report. Hosted runners are always online.
 func (c *Collector) GitHubHosted() (policy.State, error) {
-	org, err := c.ownerIsOrg()
+	org, err := c.OwnerIsOrg()
 	if err != nil {
 		return policy.State{}, err
 	}
@@ -265,40 +298,82 @@ func blacksmithMultiplier(label string) float64 {
 	return float64(n) / 2
 }
 
-// billedMinutes rounds a job's duration up to whole minutes and applies the
-// Blacksmith size multiplier. Jobs not on a Blacksmith label bill nothing.
-func billedMinutes(labels []string, started, completed time.Time) float64 {
-	for _, l := range labels {
-		if isBlacksmith(l) {
-			d := completed.Sub(started)
-			if d <= 0 {
-				return 0
-			}
-			return math.Ceil(d.Minutes()) * blacksmithMultiplier(l)
-		}
+// ranMinutes is a job's wall-clock duration rounded up to whole minutes, zero
+// for a job that never reached a runner.
+func ranMinutes(j job, end time.Time) float64 {
+	if j.RunnerName == "" || j.StartedAt == nil {
+		return 0
 	}
-	return 0
+	d := end.Sub(*j.StartedAt)
+	if d <= 0 {
+		return 0
+	}
+	return math.Ceil(d.Minutes())
 }
 
-// Blacksmith estimates this month's billed Blacksmith minutes from the jobs of
-// runs created this month in every repository the owner has, caching completed
-// jobs in StatePath.
+// usage holds this month's jobs that ran on a runner.
+type usage struct {
+	done    map[string]jobRecord
+	running []jobRecord
+}
+
+// blacksmith sums billed Blacksmith minutes, scaling each job by vCPU/2.
+func (u *usage) blacksmith() float64 {
+	var total float64
+	add := func(r jobRecord) {
+		for _, l := range r.Labels {
+			if isBlacksmith(l) {
+				total += r.Minutes * blacksmithMultiplier(l)
+				return
+			}
+		}
+	}
+	for _, r := range u.done {
+		add(r)
+	}
+	for _, r := range u.running {
+		add(r)
+	}
+	return total
+}
+
+// onLabel sums the minutes of completed jobs that targeted label.
+func (u *usage) onLabel(label string) float64 {
+	var total float64
+	for _, r := range u.done {
+		if slices.Contains(r.Labels, label) {
+			total += r.Minutes
+		}
+	}
+	return total
+}
+
+// Blacksmith estimates this month's billed Blacksmith minutes.
 func (c *Collector) Blacksmith() (policy.State, error) {
+	u, err := c.monthUsage()
+	if err != nil {
+		return policy.State{}, err
+	}
+	return policy.State{Online: true, UsedMinutes: u.blacksmith()}, nil
+}
+
+// monthUsage reads the jobs of runs created this month in every repository the
+// owner has, caching completed jobs in StatePath.
+func (c *Collector) monthUsage() (*usage, error) {
 	now := c.now()
-	month := now.Format("2006-01")
-	st, err := loadState(c.StatePath, month)
+	st, err := loadState(c.StatePath, now.Format("2006-01"))
 	if err != nil {
-		return policy.State{}, err
+		return nil, err
 	}
-	repos, err := c.ownerRepos()
+	repos, err := c.OwnerRepos()
 	if err != nil {
-		return policy.State{}, err
+		return nil, err
 	}
-	var running float64
+	u := &usage{done: st.Jobs}
 	for _, repo := range repos {
 		runs, err := c.monthRuns(repo, now)
 		if err != nil {
-			return policy.State{}, err
+			return nil, err
 		}
 		for _, run := range runs {
 			key := fmt.Sprintf("%d/%d", run.ID, run.RunAttempt)
@@ -307,7 +382,7 @@ func (c *Collector) Blacksmith() (policy.State, error) {
 			}
 			jobs, err := c.jobs(repo, run.ID, "all")
 			if err != nil {
-				return policy.State{}, err
+				return nil, err
 			}
 			done := run.Status == "completed"
 			for _, j := range jobs {
@@ -316,15 +391,13 @@ func (c *Collector) Blacksmith() (policy.State, error) {
 					continue
 				}
 				switch {
-				case j.Status == "completed" && j.StartedAt != nil && j.CompletedAt != nil:
-					st.Jobs[id] = billedMinutes(j.Labels, *j.StartedAt, *j.CompletedAt)
+				case j.Status == "completed" && j.CompletedAt != nil:
+					st.Jobs[id] = jobRecord{Labels: j.Labels, Minutes: ranMinutes(j, *j.CompletedAt)}
 				case j.Status == "completed":
-					st.Jobs[id] = 0
+					st.Jobs[id] = jobRecord{Labels: j.Labels}
 				default:
 					done = false
-					if j.StartedAt != nil {
-						running += billedMinutes(j.Labels, *j.StartedAt, now)
-					}
+					u.running = append(u.running, jobRecord{Labels: j.Labels, Minutes: ranMinutes(j, now)})
 				}
 			}
 			if done {
@@ -333,17 +406,14 @@ func (c *Collector) Blacksmith() (policy.State, error) {
 		}
 	}
 	if err := st.save(c.StatePath); err != nil {
-		return policy.State{}, err
+		return nil, err
 	}
-	s := policy.State{Online: true, UsedMinutes: running}
-	for _, m := range st.Jobs {
-		s.UsedMinutes += m
-	}
-	return s, nil
+	return u, nil
 }
 
-func (c *Collector) ownerRepos() ([]string, error) {
-	org, err := c.ownerIsOrg()
+// OwnerRepos lists the owner's non-archived repositories as owner/name.
+func (c *Collector) OwnerRepos() ([]string, error) {
+	org, err := c.OwnerIsOrg()
 	if err != nil {
 		return nil, err
 	}

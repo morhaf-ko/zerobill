@@ -62,7 +62,6 @@ type Provider struct {
 	Kind           string  `yaml:"kind"`
 	MonthlyMinutes float64 `yaml:"monthly_minutes"`
 	ReserveMinutes float64 `yaml:"reserve_minutes"`
-	Multiplier     float64 `yaml:"multiplier"`
 	MaxQueueWait   string  `yaml:"max_queue_wait"`
 	OnDemand       bool    `yaml:"on_demand"`
 	RetryAfter     string  `yaml:"retry_after"`
@@ -199,14 +198,10 @@ func (c *Config) PolicyProviders() ([]policy.Provider, error) {
 		if err != nil {
 			return nil, fmt.Errorf("provider %s retry_after: %w", p.Name, err)
 		}
-		mult := p.Multiplier
-		if mult == 0 {
-			mult = 1
-		}
 		out = append(out, policy.Provider{
 			Name: p.Name, Label: p.Label, Kind: policy.Kind(p.Kind),
 			MonthlyMinutes: p.MonthlyMinutes, ReserveMinutes: p.ReserveMinutes,
-			Multiplier: mult, MaxQueueWait: wait, OnDemand: p.OnDemand, RetryAfter: retry,
+			MaxQueueWait: wait, OnDemand: p.OnDemand, RetryAfter: retry,
 		})
 	}
 	return out, nil
@@ -246,7 +241,8 @@ type Observation struct {
 }
 
 // Observed is one provider's state. Self-hosted providers set Online and
-// OldestQueued; metered providers set UsedMinutes.
+// OldestQueued, and UsedMinutes for minutes they served this month; metered
+// providers set UsedMinutes.
 type Observed struct {
 	Online       *bool    `yaml:"online,omitempty" json:"online,omitempty"`
 	UsedMinutes  *float64 `yaml:"used_minutes,omitempty" json:"used_minutes,omitempty"`
@@ -264,6 +260,10 @@ func Snapshot(providers []policy.Provider, states map[string]policy.State) Obser
 		var ob Observed
 		if p.Kind == policy.SelfHosted {
 			ob.Online = &s.Online
+			if s.UsedMinutes > 0 {
+				served := s.UsedMinutes
+				ob.UsedMinutes = &served
+			}
 			if s.OldestQueued > 0 {
 				ob.OldestQueued = s.OldestQueued.Round(time.Second).String()
 			}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,7 +120,7 @@ func TestSelfHostedUserReadsRepositoryRunners(t *testing.T) {
 	}
 }
 
-const usage = `{"usageItems":[
+const billingReport = `{"usageItems":[
 	{"product":"actions","sku":"Actions Linux","quantity":43,"unitType":"Minutes","repositoryName":"a"},
 	{"product":"actions","sku":"Actions Linux","quantity":7,"unitType":"Minutes","repositoryName":"b"},
 	{"product":"actions","sku":"Actions Windows","quantity":5,"unitType":"Minutes"},
@@ -137,7 +138,7 @@ func TestGitHubHosted(t *testing.T) {
 				if q := r.URL.Query(); q.Get("year") != "2026" || q.Get("month") != "11" {
 					t.Errorf("billing period %s, want 2026-11", r.URL.RawQuery)
 				}
-				fmt.Fprint(w, usage)
+				fmt.Fprint(w, billingReport)
 			}
 			s, err := f.collector(tc.owner).GitHubHosted()
 			if err != nil {
@@ -182,9 +183,9 @@ func TestBlacksmithCachesCompletedJobs(t *testing.T) {
 			t.Errorf("jobs filter %q, want all attempts", r.URL.Query().Get("filter"))
 		}
 		fmt.Fprintf(w, `{"jobs":[
-			{"id":10,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q},
-			{"id":11,"status":"completed","labels":["blacksmith-4vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q},
-			{"id":12,"status":"completed","labels":["ubuntu-24.04"],"started_at":%q,"completed_at":%q},
+			{"id":10,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q,"runner_name":"r"},
+			{"id":11,"status":"completed","labels":["blacksmith-4vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q,"runner_name":"r"},
+			{"id":12,"status":"completed","labels":["ubuntu-24.04"],"started_at":%q,"completed_at":%q,"runner_name":"r"},
 			{"id":13,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":null,"completed_at":%q}]}`,
 			ts(3*time.Hour), ts(3*time.Hour-61*time.Second),
 			ts(2*time.Hour), ts(2*time.Hour-3*time.Minute),
@@ -192,8 +193,8 @@ func TestBlacksmithCachesCompletedJobs(t *testing.T) {
 			ts(time.Hour))
 	}
 	f.json("/repos/acme/app/actions/runs/2/jobs", fmt.Sprintf(`{"jobs":[
-		{"id":20,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q},
-		{"id":21,"status":"in_progress","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q}]}`,
+		{"id":20,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q,"runner_name":"r"},
+		{"id":21,"status":"in_progress","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"runner_name":"r"}]}`,
 		ts(10*time.Minute), ts(5*time.Minute), ts(90*time.Second)))
 
 	c := f.collector("acme")
@@ -228,7 +229,8 @@ func TestBlacksmithCachesCompletedJobs(t *testing.T) {
 func TestObserveRoutesProvidersAndReportsErrors(t *testing.T) {
 	f := newFake(t)
 	f.json("/users/acme", `{"type":"Organization"}`)
-	f.json("/organizations/acme/settings/billing/usage", usage)
+	f.json("/organizations/acme/settings/billing/usage", billingReport)
+	f.json("/orgs/acme/repos", `[]`)
 	f.routes["/orgs/acme/actions/runners"] = func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
@@ -249,6 +251,47 @@ func TestObserveRoutesProvidersAndReportsErrors(t *testing.T) {
 	}
 	if r.States["github"].UsedMinutes != 50 {
 		t.Fatalf("github: %+v", r.States["github"])
+	}
+}
+
+func TestServedMinutesSkipJobsThatNeverRan(t *testing.T) {
+	f := newFake(t)
+	f.json("/users/acme", `{"type":"Organization"}`)
+	f.json("/orgs/acme/repos", `[{"full_name":"acme/app","archived":false,"owner":{"login":"acme"}}]`)
+	f.json("/orgs/acme/actions/runners", `{"runners":[{"status":"online","labels":[{"name":"home-ci"}]}]}`)
+	f.json("/repos/acme/app/actions/runs", `{"workflow_runs":[{"id":1,"run_attempt":1,"status":"completed"}]}`)
+	f.json("/repos/acme/app/actions/runs/1/jobs", fmt.Sprintf(`{"jobs":[
+		{"id":10,"status":"completed","labels":["home-ci"],"started_at":%q,"completed_at":%q,"runner_name":"home-1"},
+		{"id":11,"status":"completed","labels":["home-ci"],"started_at":%q,"completed_at":%q,"runner_name":""},
+		{"id":12,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q,"runner_name":""}]}`,
+		ts(3*time.Hour), ts(3*time.Hour-150*time.Second),
+		ts(2*time.Hour), ts(time.Hour),
+		ts(2*time.Hour), ts(time.Hour)))
+	providers := []policy.Provider{
+		{Name: "home", Label: "home-ci", Kind: policy.SelfHosted},
+		{Name: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Kind: policy.Metered},
+	}
+	r := f.collector("acme", "acme/app").Observe(providers)
+	// Job 10 ran 2m30s; jobs 11 and 12 waited in a queue and were cancelled.
+	if r.States["home"].UsedMinutes != 3 || r.States["blacksmith"].UsedMinutes != 0 || len(r.Errors) != 0 {
+		t.Fatalf("states %+v errors %+v", r.States, r.Errors)
+	}
+
+	f.routes["/orgs/acme/repos"] = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }
+	r = f.collector("acme", "acme/app").Observe(providers)
+	if _, ok := r.States["home"]; !ok || r.Warnings["home"] == "" || r.Errors["blacksmith"] == "" || r.Errors["home"] != "" {
+		t.Fatalf("a failed month scan must only block Blacksmith: states %+v errors %+v warnings %+v", r.States, r.Errors, r.Warnings)
+	}
+}
+
+func TestOldCacheIsRebuilt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"month":"2026-11","jobs":{"1":5},"runs":{"1/1":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := loadState(path, "2026-11")
+	if err != nil || len(st.Jobs) != 0 || len(st.Runs) != 0 || st.Version != stateVersion {
+		t.Fatalf("got %+v %v", st, err)
 	}
 }
 

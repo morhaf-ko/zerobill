@@ -39,12 +39,14 @@ func Load(path string) (Set, error) {
 }
 
 // Save writes overrides atomically, so a running watch never reads a partial file.
+// The file is world-readable: it holds no secrets, and a service account must be
+// able to read overrides an administrator wrote.
 func Save(path string, s Set) error {
 	raw, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(path, append(raw, '\n'))
+	return atomicfile.Write(path, append(raw, '\n'), 0o644)
 }
 
 // Active returns the reason each provider is disabled at now.

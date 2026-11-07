@@ -7,7 +7,7 @@
 #   docker compose exec zerobill zerobill enable home
 services:
   zerobill:
-    image: ghcr.io/morhaf-ko/zerobill:0.2.0
+    image: ghcr.io/morhaf-ko/zerobill:0.3.0
     restart: unless-stopped
     env_file: zerobill.env
     volumes:

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime/debug"
 	"slices"
@@ -36,13 +37,16 @@ func buildVersion() string {
 
 const usage = `usage:
   zerobill version
+  zerobill init --owner OWNER [--out zerobill.yaml] [--force]
+  zerobill doctor --config zerobill.yaml
   zerobill plan --config zerobill.yaml --observed observed.yaml
+  zerobill status --config zerobill.yaml [--state zerobill-state.json]
   zerobill observe --config zerobill.yaml [--state zerobill-state.json] [--out observed.yaml]
   zerobill watch --config zerobill.yaml [--state zerobill-state.json] [--applied zerobill-applied.json] [--overrides zerobill-overrides.json] [--interval 5m] [--count 0]
   zerobill disable PROVIDER [--for 72h] [--config zerobill.yaml] [--overrides zerobill-overrides.json]
   zerobill enable PROVIDER [--overrides zerobill-overrides.json]
 
-observe and watch read GITHUB_TOKEN. Only watch with mode: switch writes to GitHub,
+init, doctor, status, observe and watch read GITHUB_TOKEN. Only watch with mode: switch writes to GitHub,
 and it writes nothing in an interval where any collector fails. observe fails when
 any collector fails; watch logs the error. disable and enable take a provider out of
 rotation and back; a running watch reads the change on its next interval.`
@@ -61,6 +65,12 @@ func main() {
 		err = plan(os.Args[2:])
 	case "observe":
 		err = observe(os.Args[2:])
+	case "status":
+		err = status(os.Args[2:])
+	case "init":
+		err = initConfig(os.Args[2:])
+	case "doctor":
+		err = doctor(os.Args[2:])
 	case "watch":
 		err = watch(os.Args[2:])
 	case "disable":
@@ -185,13 +195,17 @@ func watch(args []string) error {
 
 // decisionLine is one watch log entry.
 type decisionLine struct {
-	Time         time.Time                  `json:"time"`
-	Mode         string                     `json:"mode"`
-	Routes       []routeLine                `json:"routes"`
-	Observed     map[string]config.Observed `json:"observed"`
-	Disabled     map[string]string          `json:"disabled,omitempty"`
-	Errors       map[string]string          `json:"errors,omitempty"`
-	Repositories []string                   `json:"repositories"`
+	Time     time.Time                  `json:"time"`
+	Mode     string                     `json:"mode"`
+	Routes   []routeLine                `json:"routes"`
+	Observed map[string]config.Observed `json:"observed"`
+	Disabled map[string]string          `json:"disabled,omitempty"`
+	Errors   map[string]string          `json:"errors,omitempty"`
+	Warnings map[string]string          `json:"warnings,omitempty"`
+	// SavedUSD estimates what this month's self-hosted minutes would have cost on
+	// GitHub-hosted runners.
+	SavedUSD     float64  `json:"saved_usd_estimate"`
+	Repositories []string `json:"repositories"`
 	// Cancelled and Rerun list runs moved off a stale self-hosted label, as owner/name#id.
 	Cancelled []string `json:"cancelled,omitempty"`
 	Rerun     []string `json:"rerun,omitempty"`
@@ -233,6 +247,10 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	for k, v := range r.Errors {
 		line.Errors[k] = v
 	}
+	if len(r.Warnings) > 0 {
+		line.Warnings = r.Warnings
+	}
+	line.SavedUSD = math.Round(policy.Saved(c.providers, r.States)*100) / 100
 	states := c.adjust(now, r.States, line.Errors)
 	for name, s := range states {
 		if s.Disabled != "" {

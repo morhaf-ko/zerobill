@@ -38,49 +38,64 @@ routing job runs inside your workflows, so routing itself costs no minutes.
 
 ## Quick start
 
-You need Docker on a machine that stays on (a Raspberry Pi, NAS or small VPS) and a
-GitHub token (see [Token](#token)).
+You need a GitHub token and Docker on a machine that stays on, such as a Raspberry Pi,
+NAS or small VPS. No self-hosted runner yet? See the [homelab guide](docs/homelab.md).
 
-1. In each workflow, select the runner with `runs-on: ${{ vars.CI_RUNNER }}`.
-2. Copy [`examples/zerobill.yaml`](examples/zerobill.yaml) and
-   [`examples/compose.yaml`](examples/compose.yaml) into one folder. Edit `owner`,
-   `repositories` and `providers`: keep your runner's label and delete providers you do
-   not use. List only private repositories; GitHub
-   [advises against](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security)
-   self-hosted runners on public ones.
-3. Put `GITHUB_TOKEN=...` in `zerobill.env` and run `chmod 600 zerobill.env`.
-4. Start it. It begins in `dry-run` and changes nothing:
+1. **Token.** Create a fine-grained token with read access
+   ([personal account](https://github.com/settings/personal-access-tokens/new?name=zerobill&expires_in=90&actions=read&actions_variables=read&contents=read&metadata=read&administration=read&plan=read),
+   [organization](https://github.com/settings/personal-access-tokens/new?name=zerobill&expires_in=90&actions=read&actions_variables=read&contents=read&metadata=read&organization_self_hosted_runners=read&organization_administration=read):
+   pick the organization as resource owner) and give it access to all repositories.
+   `export GITHUB_TOKEN=...`
+2. **Config.** `init` reads your private repositories, workflows, runners and
+   variables, and writes `zerobill.yaml` and `compose.yaml`:
 
    ```sh
-   docker compose up -d
-   docker compose logs -f zerobill
+   alias zerobill='docker run --rm -e GITHUB_TOKEN -u "$(id -u)" -v "$PWD:/work" -w /work ghcr.io/morhaf-ko/zerobill:0.3.0'
+   zerobill init --owner YOUR_USER_OR_ORG
    ```
 
-5. When the decisions look right, set `mode: switch` in `zerobill.yaml` and run
+3. **Check.** `zerobill doctor` tests each permission and lists every `runs-on` that
+   zerobill cannot route yet, with the line to change, such as
+   `runs-on: ${{ vars.CI_RUNNER }}`. It changes nothing.
+4. **Run.** Put `GITHUB_TOKEN=...` in `zerobill.env`, run `chmod 600 zerobill.env`, then
+   `docker compose up -d`. It starts in `dry-run`: it logs a decision every 5 minutes
+   (`docker compose logs -f zerobill`) and writes nothing.
+5. **Switch.** When the decisions look right, give the token write access to Actions
+   and Variables, set `mode: switch` in `zerobill.yaml` and run
    `docker compose restart zerobill`.
 
-Without Docker, download a binary from the
-[latest release](https://github.com/morhaf-ko/zerobill/releases/latest) and run
-`zerobill watch --config zerobill.yaml`, for example under
+List only private repositories; GitHub
+[advises against](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security)
+self-hosted runners on public ones. Without Docker, download a binary from the
+[latest release](https://github.com/morhaf-ko/zerobill/releases/latest) and use
 [`examples/zerobill.service`](examples/zerobill.service).
+
+## See your budget
+
+`zerobill status` shows each provider's minutes, what is left before the reserve, the
+month-end projection at the current pace, each route's choice and what your own runners
+saved:
+
+```text
+PROVIDER    KIND         STATE                            USED  LIMIT  LEFT  MONTH-END AT THIS PACE
+home        self-hosted  online                           1004  -      -     -
+blacksmith  metered      1611 free minutes above reserve  1089  2700   1611  4780, reserve on 17 Nov
+github      metered      890 free minutes above reserve   910   1800   890   3994, reserve on 14 Nov
+
+Saved this month: about $6.02, self-hosted minutes priced at GitHub's $0.006 a minute.
+```
+
+With Compose: `docker compose exec zerobill zerobill status`. Each log line also carries
+`saved_usd_estimate`.
 
 ## Check it works
 
-1. **Offline:** `zerobill plan --config examples/zerobill.yaml --observed examples/observed.yaml`
-   prints the decision for a hand-written snapshot.
-2. **Dry run:** each log line shows what zerobill observed and chose, and writes
-   nothing. Compare `observed` with your billing page and runner list; `errors` should
-   be absent.
-
-   ```json
-   {"mode":"dry-run","routes":[{"name":"ci","provider":"home","label":"home-ci","reason":"online","written":null}],
-    "observed":{"home":{"online":true},"github":{"used_minutes":703}}}
-   ```
-
-3. **Fallback:** `docker compose exec zerobill zerobill disable home --for 1h` makes the
-   next line choose a hosted provider; `zerobill enable home` undoes it.
-4. **Switching:** in a throwaway private repository, run `switch` mode with a
-   self-hosted label that no runner serves, and dispatch a workflow. zerobill switches
+1. **Dry run:** each log line shows what zerobill observed and chose. Compare
+   `observed` with your billing page and runner list; `errors` should be absent.
+2. **Fallback:** `docker compose exec zerobill zerobill disable home --for 1h` makes the
+   next decision choose a hosted provider; `zerobill enable home` undoes it.
+3. **Switching:** in a throwaway private repository, run `switch` mode with a
+   self-hosted label that no runner serves and dispatch a workflow. zerobill switches
    `CI_RUNNER` once the job has waited past `max_queue_wait`, cancels the run and
    reruns it on the hosted runner. See
    [testing switch mode](docs/reference.md#testing-switch-mode).
@@ -108,20 +123,23 @@ minutes, so keep a `reserve_minutes` margin if you use it.
 
 ## Token
 
-zerobill reads `GITHUB_TOKEN`. For an organization, a fine-grained token needs:
+zerobill reads `GITHUB_TOKEN`. `zerobill doctor` names any missing permission and prints
+a link that pre-fills a token for your owner.
 
 | Permission | Why |
 | --- | --- |
-| Organization: Self-hosted runners, read | Runner status |
-| Organization: Administration, read | GitHub-hosted minutes |
-| Repository: Actions, read and write | Queued jobs; cancel and rerun in switch mode |
-| Repository: Variables, read and write | Write `CI_RUNNER` in switch mode |
+| Repository: Actions, read (write for switch mode) | Queued jobs and minutes; cancel and rerun |
+| Repository: Variables, read (write for switch mode) | Read and set `CI_RUNNER` |
+| Repository: Contents, read | `init` and `doctor` read workflow files |
 | Repository: Metadata, read | List repositories |
+| Organization: Self-hosted runners, read | Runner status (organizations) |
+| Organization: Administration, read | GitHub-hosted minutes (organizations) |
+| Repository: Administration, read | Runner status (personal accounts) |
+| Account: Plan, read | GitHub-hosted minutes (personal accounts) |
 
-In `dry-run`, read access is enough. With Blacksmith, give Actions read access to every
-repository of the owner, since its minutes are summed across all of them. For a personal
-account, or as an alternative, a classic token with `repo` and `admin:org` (organization)
-or `repo` and `user` (personal account) covers everything.
+Give it access to all repositories: own-runner and Blacksmith minutes are summed across
+them. A classic token with `repo` plus `admin:org` (organization) or `user` (personal
+account) also works.
 
 ## Fair use
 

@@ -19,6 +19,9 @@ Or build it: `go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest`.
 ## Commands
 
 ```text
+zerobill init --owner OWNER [--out zerobill.yaml] [--force]
+zerobill doctor --config zerobill.yaml
+zerobill status --config zerobill.yaml [--state zerobill-state.json] [--overrides ...]
 zerobill plan --config zerobill.yaml --observed observed.yaml
 zerobill observe --config zerobill.yaml [--state zerobill-state.json] [--out observed.yaml]
 zerobill watch --config zerobill.yaml [--state ...] [--applied ...] [--overrides ...] [--interval 5m] [--count 0]
@@ -27,9 +30,20 @@ zerobill enable PROVIDER
 zerobill version
 ```
 
-`observe` and `watch` read `GITHUB_TOKEN`. Only `watch` in `mode: switch` writes to
-GitHub, and it writes nothing in an interval where any collector failed. `observe`
-fails when any collector fails; `watch` logs the error and skips that provider.
+Every command except `plan`, `disable` and `enable` reads `GITHUB_TOKEN`. Only `watch`
+in `mode: switch` writes to GitHub, and it writes nothing in an interval where any
+collector failed. `observe` fails when any collector fails; `watch` logs the error and
+skips that provider.
+
+- `init` lists the owner's private repositories with workflows, reads their `runs-on`
+  lines, variables and registered runners, and writes a `dry-run` config plus
+  `compose.yaml` if missing. It never overwrites a config without `--force`.
+- `doctor` checks each permission with one read, the runners for each self-hosted
+  label, and every `runs-on` line in `repositories`, and prints a pre-filled token link
+  when a permission is missing. It exits non-zero on a failed check.
+- `status` prints minutes used, the limit before the reserve, what is left, the
+  month-end projection at the current pace, each route's choice and the savings
+  estimate. It does not apply `min_hold`, so `watch` can lag its choice.
 
 ## How it decides
 
@@ -58,12 +72,13 @@ GET requests:
 
 | Provider | Collector |
 | --- | --- |
-| `kind: self-hosted` | Online when any runner with the label is online. Queue age is the oldest queued job on the label in `repositories`. |
-| `kind: metered`, label `blacksmith-*` | Job durations on `blacksmith-*` labels in runs created this month (UTC) in all of the owner's repositories, rounded up per job and scaled by vCPU/2. Completed jobs are cached in `--state`. |
+| `kind: self-hosted` | Online when any runner with the label is online. Queue age is the oldest queued job on the label in `repositories`. Minutes served this month come from jobs that ran on the label in all of the owner's repositories and feed the savings estimate. |
+| `kind: metered`, label `blacksmith-*` | Job durations on `blacksmith-*` labels in runs created this month (UTC) in all of the owner's repositories, rounded up per job and scaled by vCPU/2. Jobs that never reached a runner count zero. Completed jobs are cached in `--state`; the first run of a month reads every run and can take minutes. |
 | `kind: metered`, label `ubuntu-*` | `Actions Linux` minutes from the billing usage report for this month. |
 
 A user owner must be the token's user, since only they can list their private
-repositories.
+repositories. The savings estimate prices self-hosted minutes at GitHub's Linux 2-core
+rate of $0.006 a minute; a self-hosted minute served on a larger machine saves more.
 
 ## Switching
 

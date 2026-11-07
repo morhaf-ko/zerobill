@@ -200,5 +200,5 @@ func SaveState(path string, st State) error {
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(path, raw)
+	return atomicfile.Write(path, raw, 0o600)
 }

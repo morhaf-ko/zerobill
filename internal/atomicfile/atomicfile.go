@@ -6,8 +6,9 @@ import (
 	"path/filepath"
 )
 
-// Write replaces path with raw through a temporary file in the same directory.
-func Write(path string, raw []byte) error {
+// Write replaces path with raw through a temporary file in the same directory,
+// leaving it with mode perm.
+func Write(path string, raw []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -17,6 +18,10 @@ func Write(path string, raw []byte) error {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
 		tmp.Close()
 		return err
 	}

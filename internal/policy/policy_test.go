@@ -8,8 +8,8 @@ import (
 
 var fleet = []Provider{
 	{Name: "forge", Label: "morhaf-ci", Kind: SelfHosted, MaxQueueWait: 10 * time.Minute},
-	{Name: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Kind: Metered, MonthlyMinutes: 3000, ReserveMinutes: 300, Multiplier: 1},
-	{Name: "github", Label: "ubuntu-24.04", Kind: Metered, MonthlyMinutes: 2000, ReserveMinutes: 200, Multiplier: 1},
+	{Name: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Kind: Metered, MonthlyMinutes: 3000, ReserveMinutes: 300},
+	{Name: "github", Label: "ubuntu-24.04", Kind: Metered, MonthlyMinutes: 2000, ReserveMinutes: 200},
 }
 
 var ordered = Route{Name: "ci", Providers: fleet, Fallback: fleet[0], Balance: Order}

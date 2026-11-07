@@ -25,9 +25,6 @@ type Provider struct {
 	// kept back so a switch never lands on a provider that runs dry mid-job.
 	MonthlyMinutes float64
 	ReserveMinutes float64
-	// Multiplier converts wall-clock job minutes into billed minutes, for example 2
-	// for a 4-vCPU Blacksmith runner.
-	Multiplier float64
 	// MaxQueueWait marks a self-hosted provider saturated when its oldest queued job
 	// has waited longer. Zero disables the check.
 	MaxQueueWait time.Duration
@@ -58,6 +55,22 @@ type Decision struct {
 	Label    string
 	Reason   string
 	Fallback bool
+}
+
+// GitHubMinuteUSD is GitHub's price for a Linux 2-core hosted minute, which a
+// minute served by a self-hosted runner would otherwise cost.
+const GitHubMinuteUSD = 0.006
+
+// Saved estimates what this month's self-hosted minutes would cost on
+// GitHub-hosted runners.
+func Saved(providers []Provider, states map[string]State) float64 {
+	var minutes float64
+	for _, p := range providers {
+		if p.Kind == SelfHosted {
+			minutes += states[p.Name].UsedMinutes
+		}
+	}
+	return minutes * GitHubMinuteUSD
 }
 
 // Remaining returns billed minutes left before the reserve.

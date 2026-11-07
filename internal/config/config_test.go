@@ -23,7 +23,7 @@ func TestLoadExample(t *testing.T) {
 	if c.Mode != DryRun || c.Hold() != DefaultMinHold {
 		t.Fatalf("unexpected defaults: %s %s", c.Mode, c.Hold())
 	}
-	if providers[0].MaxQueueWait != 10*time.Minute || providers[1].Multiplier != 1 {
+	if providers[0].MaxQueueWait != 10*time.Minute || providers[1].MonthlyMinutes != 3000 {
 		t.Fatalf("unexpected providers: %+v", providers)
 	}
 	states, err := LoadObservation("../../examples/observed.yaml")
