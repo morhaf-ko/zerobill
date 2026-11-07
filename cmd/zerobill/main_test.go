@@ -119,7 +119,7 @@ func TestSwitchModeAppliesHoldsAndSkips(t *testing.T) {
 			t.Fatalf("%s: written %v, %d requests", s.name, line.Written, writes)
 		}
 	}
-	a, err := apply.LoadApplied(appliedPath)
+	a, err := apply.LoadState(appliedPath)
 	if err != nil || a.Label != "home-ci" || !a.Since.Equal(now.Add(17*time.Minute)) {
 		t.Fatalf("applied %+v %v", a, err)
 	}
@@ -148,7 +148,7 @@ func TestSwitchModePartialWriteStartsHold(t *testing.T) {
 	ctl := &controller{
 		cfg: cfg, providers: providers, writer: &apply.Writer{GH: gh},
 		appliedPath: filepath.Join(t.TempDir(), "applied.json"),
-		applied:     policy.Applied{Provider: "home", Label: "home-ci", Since: now.Add(-time.Hour)},
+		state:       apply.State{Applied: policy.Applied{Provider: "home", Label: "home-ci", Since: now.Add(-time.Hour)}},
 	}
 	var buf bytes.Buffer
 	states := map[string]policy.State{"home": {}, "blacksmith": {UsedMinutes: 100}, "github": {}}
@@ -159,8 +159,8 @@ func TestSwitchModePartialWriteStartsHold(t *testing.T) {
 	if len(line.Written) != 3 || !strings.Contains(line.Errors["write"], "403") {
 		t.Fatalf("unexpected line %+v", line)
 	}
-	if ctl.applied.Provider != "blacksmith" || !ctl.applied.Since.Equal(now) {
-		t.Fatalf("applied %+v", ctl.applied)
+	if ctl.state.Provider != "blacksmith" || !ctl.state.Since.Equal(now) {
+		t.Fatalf("applied %+v", ctl.state.Applied)
 	}
 }
 
@@ -174,4 +174,32 @@ func decode(t *testing.T, buf *bytes.Buffer) decisionLine {
 		t.Fatal(err)
 	}
 	return line
+}
+
+func TestStuckRunsOnlyLeaveUnusableSelfHostedLabels(t *testing.T) {
+	cfg, providers, err := loadConfig("../../examples/zerobill.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl := &controller{cfg: cfg, providers: providers}
+	queued := map[string][]collect.Run{"home": {{Repo: "your-org/your-app", ID: 7, Attempt: 1}}}
+	tests := []struct {
+		name  string
+		label string
+		home  policy.State
+		want  int
+	}{
+		{"offline home while on blacksmith", "blacksmith-2vcpu-ubuntu-2404", policy.State{}, 1},
+		{"saturated home while on blacksmith", "blacksmith-2vcpu-ubuntu-2404", policy.State{Online: true, OldestQueued: time.Hour}, 1},
+		{"online home held on blacksmith", "blacksmith-2vcpu-ubuntu-2404", policy.State{Online: true}, 0},
+		{"offline home as fallback keeps its queue", "home-ci", policy.State{}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := collect.Result{States: map[string]policy.State{"home": tt.home}, Movable: queued}
+			if got := ctl.stuck(tt.label, r); len(got) != tt.want {
+				t.Fatalf("got %v, want %d runs", got, tt.want)
+			}
+		})
+	}
 }

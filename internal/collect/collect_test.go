@@ -79,12 +79,16 @@ func TestSelfHostedOrg(t *testing.T) {
 		{"id":20,"status":"in_progress","labels":["home-ci"],"created_at":%q},
 		{"id":21,"status":"queued","labels":["home-ci"],"created_at":%q}]}`, ts(time.Hour), ts(12*time.Minute)))
 
-	s, err := f.collector("acme", "acme/app").SelfHosted("home-ci")
+	s, movable, err := f.collector("acme", "acme/app").SelfHosted("home-ci")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !s.Online || s.OldestQueued != 12*time.Minute {
 		t.Fatalf("got %+v, want online with a 12m queue", s)
+	}
+	// Run 2 has a started job, so cancelling it would stop work in progress.
+	if len(movable) != 1 || movable[0] != (Run{Repo: "acme/app", ID: 1, Attempt: 1}) {
+		t.Fatalf("movable %+v, want only run 1", movable)
 	}
 	if f.hits["/orgs/acme/actions/runners"] != 2 {
 		t.Fatalf("runner list not paginated: %d requests", f.hits["/orgs/acme/actions/runners"])
@@ -97,11 +101,11 @@ func TestSelfHostedUserReadsRepositoryRunners(t *testing.T) {
 	f.json("/repos/octo/app/actions/runners", `{"runners":[{"status":"offline","labels":[{"name":"home-ci"}]}]}`)
 	f.json("/repos/octo/app/actions/runs", `{"workflow_runs":[]}`)
 
-	s, err := f.collector("octo", "octo/app").SelfHosted("home-ci")
+	s, movable, err := f.collector("octo", "octo/app").SelfHosted("home-ci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Online || s.OldestQueued != 0 {
+	if s.Online || s.OldestQueued != 0 || movable != nil {
 		t.Fatalf("got %+v, want offline with no queue", s)
 	}
 }
