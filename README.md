@@ -12,8 +12,9 @@ spend the minutes zerobill exists to save.
 ## Status
 
 Milestone 1, dry run. `zerobill plan` reads a policy and a provider snapshot and prints
-the label it would choose. Live collectors and variable switching come next; see
-[the design](docs/design.md).
+the label it would choose. `zerobill observe` and `zerobill watch` collect live state
+from GitHub and log decisions without writing anything. Variable switching comes next;
+see [the design](docs/design.md).
 
 ## How it decides
 
@@ -37,6 +38,27 @@ mode: dry-run
 decision: blacksmith -> blacksmith-2vcpu-ubuntu-2404
 reason: 1460 free minutes above reserve (skipped home: offline)
 would set CI_RUNNER, RELEASE_RUNNER, LIGHT_RUNNER on your-org/your-app to blacksmith-2vcpu-ubuntu-2404
+```
+
+## Live state
+
+`observe` and `watch` read `GITHUB_TOKEN` and the config's `owner`, an organization or
+user, and only send GET requests. Each provider's collector follows from its config:
+
+| Provider | Collector |
+| --- | --- |
+| `kind: self-hosted` | Online when any runner with the label is online. Queue age is the oldest queued job on the label in `repositories`. |
+| `kind: metered`, label `blacksmith-*` | Job durations on `blacksmith-*` labels in all of the owner's repositories this month, rounded up per job and scaled by vCPU/2. Completed jobs are cached in `--state`. |
+| `kind: metered`, any other label | `Actions Linux` minutes from the billing usage report for this month. |
+
+The billing report needs organization admin access, or the `user` scope for a user
+account. `watch` logs one JSON line per interval; a provider whose collector fails is
+reported under `errors` and skipped by the policy.
+
+```sh
+export GITHUB_TOKEN=$(gh auth token)
+go run ./cmd/zerobill observe --config zerobill.yaml --out observed.yaml
+go run ./cmd/zerobill watch --config zerobill.yaml --interval 5m
 ```
 
 ## Scope

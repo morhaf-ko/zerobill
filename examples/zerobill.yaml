@@ -1,5 +1,7 @@
 # Providers are tried in order. Self-hosted hardware first, metered free tiers after.
 mode: dry-run
+# Live collectors read runners, billing and repositories of this organization or user.
+owner: your-org
 repositories:
   - your-org/your-app
 variables: [CI_RUNNER, RELEASE_RUNNER, LIGHT_RUNNER]
