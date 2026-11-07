@@ -7,6 +7,8 @@ Open an issue before a large change, so the approach can be agreed first. Small 
 - Run `go vet ./...` and `go test -race ./...` before pushing. CI also runs actionlint, an offline zizmor scan and `goreleaser check`.
 - Keep examples free of tokens, real repository names and logs from a live installation.
 
+Renovate proposes dependency updates on Mondays after a five-day release age, and majors wait for approval on its dependency dashboard. Nothing merges automatically, because the repository has no required status checks.
+
 This repository is public, so its `CI_RUNNER` and `RELEASE_RUNNER` variables point at GitHub-hosted runners and it is never listed in a zerobill config. Both variables must exist; a workflow with an unset runner variable fails visibly.
 
 zerobill chooses between free capacity you already have. Changes that create accounts or organizations to collect more free minutes are out of scope.
