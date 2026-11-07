@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -169,6 +170,56 @@ func TestPauseTakesTheRunnerOut(t *testing.T) {
 	l := step(t, c, 0, result(policy.State{Online: true, Registered: true}))
 	if l.Routes[0].Provider != "blacksmith" || !strings.Contains(l.Paused["runner"], "paused until") {
 		t.Fatalf("line %+v", l)
+	}
+}
+
+func TestNotifiesOnlyWhenTheChoiceChanges(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, string(b))
+	}))
+	defer srv.Close()
+	c, _ := newTestController(t, false)
+	c.a.cfg.Notify = srv.URL + "/topic"
+	step(t, c, 0, result(policy.State{Online: true, Registered: true}))
+	step(t, c, 5*time.Minute, result(policy.State{Online: true, Registered: true}))
+	step(t, c, 20*time.Minute, result(policy.State{Registered: true}))
+	if len(got) != 2 || !strings.HasPrefix(got[0], "zerobill: CI_RUNNER → home-ci (online); BOT_RUNNER → blacksmith") ||
+		!strings.HasPrefix(got[1], "zerobill: CI_RUNNER → blacksmith-2vcpu-ubuntu-2404") || !strings.HasSuffix(got[1], "[log only]") {
+		t.Fatalf("messages %q", got)
+	}
+}
+
+func TestApplyNotifiesOnlyWhatItWrote(t *testing.T) {
+	var got []string
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, string(b))
+	}))
+	defer hook.Close()
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
+	defer denied.Close()
+
+	c, _ := newTestController(t, true)
+	c.a.cfg.Notify = hook.URL + "/topic"
+	c.writer.GH.BaseURL = denied.URL
+	l := step(t, c, 0, result(policy.State{Online: true, Registered: true}))
+	if len(got) != 0 || l.Errors == nil {
+		t.Fatalf("notified %q although every write failed: %+v", got, l.Errors)
+	}
+
+	c, _ = newTestController(t, true)
+	c.a.cfg.Notify = hook.URL + "/topic"
+	step(t, c, 0, result(policy.State{Online: true, Registered: true}))
+	if len(got) != 1 || strings.HasSuffix(got[0], "[log only]") {
+		t.Fatalf("messages %q", got)
+	}
+
+	c.a.cfg.Notify = denied.URL + "/secret-hook"
+	l = step(t, c, 20*time.Minute, result(policy.State{Registered: true}))
+	if l.Errors["notify"] == "" || strings.Contains(l.Errors["notify"], "secret-hook") {
+		t.Fatalf("notify error %q", l.Errors["notify"])
 	}
 }
 

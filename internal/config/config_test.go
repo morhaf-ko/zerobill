@@ -37,9 +37,10 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("got %+v %v", c, err)
 	}
 	for body, want := range map[string]string{
-		"runner: home-ci\n":           "owner is required",
-		"owner: acme\nmode: switch\n": "takes only owner, runner and blacksmith",
-		"owner: [\n":                  "config.yaml",
+		"runner: home-ci\n":                "owner is required",
+		"owner: acme\nmode: switch\n":      "takes only owner, runner, blacksmith and notify",
+		"owner: acme\nnotify: ntfy.sh/x\n": "notify must be an http or https URL",
+		"owner: [\n":                       "config.yaml",
 	} {
 		if _, err := Load(write(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: got %v, want %q", body, err, want)

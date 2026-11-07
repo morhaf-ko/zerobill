@@ -28,6 +28,28 @@ to the best free runner, which your workflows read with
 `runs-on: ${{ vars.CI_RUNNER }}`. And it reruns jobs that were already stuck on your
 runner when it went down, on the new runner.
 
+With your runner off, `zerobill status` shows where jobs go and how long each free tier
+lasts:
+
+```text
+$ zerobill status
+your-org, 7 Nov 21:30 UTC, 23% of the month gone
+
+RUNNER      LABEL                         STATE                   USED      FREE      MONTH END AT THIS PACE
+runner      home-ci                       offline                 -         -         -
+blacksmith  blacksmith-2vcpu-ubuntu-2404  1570 free minutes left  1130 min  1570 min  4916 min, runs out 17 Nov
+github      ubuntu-latest                 850 free minutes left   950 min   850 min   4133 min, runs out 14 Nov
+
+VARIABLE    USE                           WHY
+CI_RUNNER   blacksmith-2vcpu-ubuntu-2404  least used free tier: blacksmith 42%, github 53% (skipped runner: offline)
+BOT_RUNNER  blacksmith-2vcpu-ubuntu-2404  least used free tier: blacksmith 42%, github 53%
+
+Repositories: 7 read CI_RUNNER or BOT_RUNNER.
+
+Problems:
+  fixed runner, change to ${{ vars.CI_RUNNER }}: your-org/api .github/workflows/release.yml:12: ubuntu-latest
+```
+
 ## Install
 
 ```sh
@@ -69,12 +91,13 @@ Or download a binary for Linux or macOS from the
    To keep it running across reboots on Linux, use the systemd user service in
    [`examples/zerobill.service`](examples/zerobill.service).
 
-## Add free capacity
+## Options
 
 | | Add to the config | Then |
 | --- | --- | --- |
 | **Your own runner** | `runner: home-ci` | Install GitHub's runner with that label; see the [self-hosted runner guide](docs/homelab.md). zerobill uses it first and moves jobs away once it stops. |
 | **Blacksmith** | `blacksmith: true` | Install the [Blacksmith](https://www.blacksmith.sh/) GitHub app. Its 3,000 free minutes are shared with GitHub's so both last the month. |
+| **Notifications** | `notify: https://ntfy.sh/your-topic` | Get a message whenever zerobill changes runner. Discord and Slack webhook URLs work too. |
 
 Keep dependency bots on the hosted tiers, so your machine stays free for you:
 
