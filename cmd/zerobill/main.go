@@ -140,7 +140,7 @@ func githubToken() (string, error) {
 	}
 	out, err := exec.Command("gh", "auth", "token", "--hostname", "github.com").Output()
 	if errors.Is(err, exec.ErrNotFound) {
-		return "", errors.New("no GitHub access: install the GitHub CLI and run gh auth login, or set GITHUB_TOKEN")
+		return "", errors.New("no GitHub access: set GITHUB_TOKEN, or install the GitHub CLI and run gh auth login")
 	}
 	if err != nil || strings.TrimSpace(string(out)) == "" {
 		return "", errors.New("no GitHub access: run gh auth login, or set GITHUB_TOKEN")

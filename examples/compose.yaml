@@ -1,11 +1,12 @@
-# Run zerobill with Docker on a machine that stays on:
+# Run zerobill with Docker on a machine that stays on. Create
+# ~/.config/zerobill/config.yaml first, then:
 #   GITHUB_TOKEN=$(gh auth token) docker compose up -d
 # or put GITHUB_TOKEN=<fine-grained token> in a .env file next to this one.
 # Follow it with docker compose logs -f zerobill. It only logs until the command
 # is ["run", "--apply"].
 services:
   zerobill:
-    image: ghcr.io/morhaf-ko/zerobill:latest
+    image: ghcr.io/morhaf-ko/zerobill:latest   # or pin a release, such as :0.3.3
     restart: unless-stopped
     command: ["run"]
     environment:

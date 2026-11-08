@@ -91,7 +91,8 @@ image `ghcr.io/morhaf-ko/zerobill` with Docker.
 
    To keep it running across reboots, use Docker with
    [`examples/compose.yaml`](examples/compose.yaml) (isolated, read-only, needs a
-   `GITHUB_TOKEN`), or the systemd user service in
+   `GITHUB_TOKEN`; it logs only until you change its command to `["run", "--apply"]`),
+   or the systemd user service in
    [`examples/zerobill.service`](examples/zerobill.service) (uses your GitHub CLI login).
 
 ## Options

@@ -63,7 +63,8 @@ for each job. zerobill works with them; three settings make it work well:
   your pool as warm: when the machine goes off it waits for one job to stall, moves CI to
   the free tiers, and comes back the moment an idle runner is online again. Without idle
   runners it cannot tell "off" from "no job yet", so it retries an hour after the stall.
-- **Register the pools at organization level,** so zerobill can read them.
+- **Register the pools where zerobill reads runners:** at organization level when
+  `owner` is an organization, on the repositories for a personal account.
 
 When the machine that runs your jobs is off, GARM removes its runners. The first job
 then waits 10 minutes, zerobill moves `CI_RUNNER` to a free tier and reruns that job
