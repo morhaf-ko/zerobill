@@ -151,12 +151,28 @@ func TestQueueStallRecovery(t *testing.T) {
 	stall := policy.State{OldestQueued: 11 * time.Minute}
 	for name, steps := range map[string][]at{
 		// Warm runners stay idle across checks, so the pool stays down until one is back.
+		// The second check may come a little under an interval after a late first one.
 		"warm pool": {
+			{0, idle, "home-ci"},
+			{4*time.Minute + 49*time.Second, idle, "home-ci"},
+			{10 * time.Minute, stall, "blacksmith-2vcpu-ubuntu-2404"},
+			{5 * time.Hour, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
+			{5*time.Hour + 5*time.Minute, idle, "home-ci"},
+		},
+		// Idle sightings far apart do not make a pool warm.
+		"stale sighting": {
+			{0, idle, "home-ci"},
+			{30 * time.Minute, idle, "home-ci"},
+			{35 * time.Minute, stall, "blacksmith-2vcpu-ubuntu-2404"},
+			{96 * time.Minute, policy.State{}, "home-ci"},
+		},
+		// A warm pool still off is tried again after six hours.
+		"warm pool retried": {
 			{0, idle, "home-ci"},
 			{5 * time.Minute, idle, "home-ci"},
 			{10 * time.Minute, stall, "blacksmith-2vcpu-ubuntu-2404"},
-			{8 * time.Hour, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
-			{8*time.Hour + 5*time.Minute, idle, "home-ci"},
+			{5 * time.Hour, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
+			{6*time.Hour + 15*time.Minute, policy.State{}, "home-ci"},
 		},
 		// A per-job runner idle on a single check does not make the pool warm,
 		// and a job stuck in the queue does not postpone the hourly retry.

@@ -14,6 +14,9 @@ const (
 	// RetryAfter is when a stalled pool that never shows idle runners is tried
 	// again, since it only registers a runner once a job arrives.
 	RetryAfter = time.Hour
+	// WarmRetryAfter is the same for a pool that keeps idle runners, whose
+	// return is normally seen first; it bounds a mistaken warm mark.
+	WarmRetryAfter = 6 * time.Hour
 	// MinHold is how long an applied label stays while it is still usable.
 	MinHold = 15 * time.Minute
 	// ReservePercent of a free tier is kept back so a job never starts on a tier
@@ -51,7 +54,7 @@ type State struct {
 	UsedMinutes  float64
 	OldestQueued time.Duration
 	// Stalled is set after a queue stall until a runner with the label is online,
-	// or for RetryAfter when the pool keeps no idle runners.
+	// or until it is retried.
 	Stalled bool
 	// Paused holds why the user took the provider out of rotation.
 	Paused string
