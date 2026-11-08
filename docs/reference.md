@@ -64,9 +64,16 @@ Without `--apply`, `run` logs the same decisions as JSON lines and writes nothin
 
 ## Running it as a service
 
-On Linux, [`examples/zerobill.service`](../examples/zerobill.service) is a systemd user
-service that uses your GitHub CLI login. Read its decisions with
-`journalctl --user -u zerobill -f`; on systems without per-user journals, use
-`sudo journalctl _SYSTEMD_USER_UNIT=zerobill.service -f`. On macOS, run `zerobill run --apply` from a
-launchd agent. Run it on a different machine than your runner when you can, so a power
-cut there does not stop zerobill as well.
+- **Docker:** [`examples/compose.yaml`](../examples/compose.yaml) runs the image
+  read-only, without capabilities, as a non-root user. It reads
+  `/etc/zerobill/config.yaml` and keeps state in a volume. Containers cannot use your
+  GitHub CLI login, so pass `GITHUB_TOKEN`: `GITHUB_TOKEN=$(gh auth token)`, or a
+  fine-grained token in `.env` with only the permissions in [security](../SECURITY.md).
+- **Linux service:** [`examples/zerobill.service`](../examples/zerobill.service) is a
+  systemd user service that uses your GitHub CLI login. Read its decisions with
+  `journalctl --user -u zerobill -f`; on systems without per-user journals, use
+  `sudo journalctl _SYSTEMD_USER_UNIT=zerobill.service -f`.
+- **macOS:** run `zerobill run --apply` from a launchd agent.
+
+Run it on a different machine than your runner when you can, so a power cut there does
+not stop zerobill as well.

@@ -51,8 +51,21 @@ zerobill pause runner 14d
 
 `zerobill resume runner` brings it back early.
 
-## Runners created per job
+## Runners created per job, such as GARM
 
-GARM or Actions Runner Controller pools work too. Use the label your jobs target. No
-runner is registered between jobs, so zerobill treats a job waiting 10 minutes as the
-pool being down.
+[GARM](https://github.com/cloudbase/garm) and Actions Runner Controller create a runner
+for each job. zerobill works with them; three settings make it work well:
+
+- **Use the label every pool shares.** If GARM has a forge pool and a laptop pool, both
+  labelled `home-ci` with priorities, set `runner: home-ci`. GARM still picks which pool
+  runs the job; zerobill only decides between your pools and the free tiers.
+- **Keep at least one idle runner** (GARM's `min-idle-runners`). zerobill then sees
+  your pool as warm: when the machine goes off it waits for one job to stall, moves CI to
+  the free tiers, and comes back the moment an idle runner is online again. Without idle
+  runners it cannot tell "off" from "no job yet", so it retries an hour after the stall.
+- **Register the pools where zerobill reads runners:** at organization level when
+  `owner` is an organization, on the repositories for a personal account.
+
+When the machine that runs your jobs is off, GARM removes its runners. The first job
+then waits 10 minutes, zerobill moves `CI_RUNNER` to a free tier and reruns that job
+there, and later jobs go straight to the free tier until the machine is back.

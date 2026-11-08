@@ -57,7 +57,8 @@ go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
 ```
 
 Or download a binary for Linux or macOS from the
-[latest release](https://github.com/morhaf-ko/zerobill/releases/latest).
+[latest release](https://github.com/morhaf-ko/zerobill/releases/latest), or run the
+image `ghcr.io/morhaf-ko/zerobill` with Docker.
 
 ## Quick start
 
@@ -88,8 +89,11 @@ Or download a binary for Linux or macOS from the
    zerobill run --apply
    ```
 
-   To keep it running across reboots on Linux, use the systemd user service in
-   [`examples/zerobill.service`](examples/zerobill.service).
+   To keep it running across reboots, use Docker with
+   [`examples/compose.yaml`](examples/compose.yaml) (isolated, read-only, needs a
+   `GITHUB_TOKEN`; it logs only until you change its command to `["run", "--apply"]`),
+   or the systemd user service in
+   [`examples/zerobill.service`](examples/zerobill.service) (uses your GitHub CLI login).
 
 ## Options
 
