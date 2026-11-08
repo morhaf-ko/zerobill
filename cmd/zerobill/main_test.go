@@ -255,6 +255,26 @@ func TestApplyNotifiesOnlyWhatItWrote(t *testing.T) {
 	}
 }
 
+func TestHealth(t *testing.T) {
+	h := &heartbeat{}
+	get := func(path string) (int, string) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec.Code, rec.Body.String()
+	}
+	h.mark(time.Now().Add(-time.Minute))
+	if code, body := get("/healthz"); code != http.StatusOK || !strings.HasPrefix(body, "ok, last check 1m0s ago") {
+		t.Fatalf("fresh: %d %q", code, body)
+	}
+	h.mark(time.Now().Add(-staleAfter - time.Minute))
+	if code, body := get("/healthz"); code != http.StatusServiceUnavailable || !strings.Contains(body, "no check for 16m0s") {
+		t.Fatalf("stale: %d %q", code, body)
+	}
+	if code, _ := get("/"); code != http.StatusNotFound {
+		t.Fatalf("other paths: %d", code)
+	}
+}
+
 func TestRender(t *testing.T) {
 	a := &app{cfg: &config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}}
 	a.providers, a.routes = build(a.cfg, 2000)

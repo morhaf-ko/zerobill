@@ -33,9 +33,10 @@ const usage = `zerobill keeps GitHub Actions jobs on free runners.
 
 usage:
   zerobill [status]                     free minutes, current choices and problems
-  zerobill run [--apply]                keep CI_RUNNER and BOT_RUNNER on the best free
+  zerobill run [--apply] [--health :8080]
+                                        keep CI_RUNNER and BOT_RUNNER on the best free
                                         runner, every 5 minutes; without --apply it
-                                        only logs
+                                        only logs; --health serves /healthz
   zerobill pause runner|blacksmith|github [duration]
   zerobill resume runner|blacksmith|github
   zerobill version
