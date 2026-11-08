@@ -67,11 +67,39 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if c.Owner == "" {
-		return nil, fmt.Errorf("%s: owner is required", path)
-	}
-	if u, err := url.Parse(c.Notify); c.Notify != "" && (err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "") {
-		return nil, fmt.Errorf("%s: notify must be an http or https URL", path)
+	if err := c.check(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// FromEnv reads the config from ZEROBILL_OWNER, ZEROBILL_RUNNER,
+// ZEROBILL_BLACKSMITH and ZEROBILL_NOTIFY, for containers that pass settings as
+// environment variables. It reports false when ZEROBILL_OWNER is unset.
+func FromEnv() (*Config, bool, error) {
+	c := Config{Owner: os.Getenv("ZEROBILL_OWNER"), Runner: os.Getenv("ZEROBILL_RUNNER"), Notify: os.Getenv("ZEROBILL_NOTIFY")}
+	if c.Owner == "" {
+		return nil, false, nil
+	}
+	switch v := os.Getenv("ZEROBILL_BLACKSMITH"); v {
+	case "", "false":
+	case "true":
+		c.Blacksmith = true
+	default:
+		return nil, true, fmt.Errorf("ZEROBILL_BLACKSMITH is %q; use true or false", v)
+	}
+	if err := c.check(); err != nil {
+		return nil, true, fmt.Errorf("environment: %w", err)
+	}
+	return &c, true, nil
+}
+
+func (c *Config) check() error {
+	if c.Owner == "" {
+		return errors.New("owner is required")
+	}
+	if u, err := url.Parse(c.Notify); c.Notify != "" && (err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "") {
+		return errors.New("notify must be an http or https URL")
+	}
+	return nil
 }

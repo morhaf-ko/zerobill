@@ -41,7 +41,8 @@ usage:
   zerobill resume runner|blacksmith|github
   zerobill version
 
-Config: ~/.config/zerobill/config.yaml with owner, and optionally runner and blacksmith.
+Config: ~/.config/zerobill/config.yaml with owner, and optionally runner, blacksmith and
+notify; or ZEROBILL_OWNER, ZEROBILL_RUNNER, ZEROBILL_BLACKSMITH and ZEROBILL_NOTIFY.
 GitHub access: GITHUB_TOKEN, else the GitHub CLI login (gh auth token).`
 
 func main() {
@@ -87,11 +88,7 @@ type app struct {
 
 // load reads the config; with online set it also connects to GitHub.
 func load(online bool) (*app, error) {
-	path, err := config.Path()
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := config.Load(path)
+	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +129,18 @@ func load(online bool) (*app, error) {
 	a.col = &collect.Collector{GH: a.gh, Owner: cfg.Owner, Org: a.org, StatePath: filepath.Join(stateDir, "cache.json")}
 	a.providers, a.routes = build(cfg, includedMinutes(acct.Plan.Name))
 	return a, nil
+}
+
+// loadConfig prefers ZEROBILL_* environment variables and falls back to the file.
+func loadConfig() (*config.Config, error) {
+	if cfg, ok, err := config.FromEnv(); ok {
+		return cfg, err
+	}
+	path, err := config.Path()
+	if err != nil {
+		return nil, err
+	}
+	return config.Load(path)
 }
 
 // githubToken prefers GITHUB_TOKEN and falls back to the GitHub CLI's login.

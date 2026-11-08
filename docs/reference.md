@@ -11,6 +11,9 @@
 | `blacksmith` | `true` to use Blacksmith's free minutes too. |
 | `notify` | A URL told whenever a variable's choice changes: an [ntfy](https://ntfy.sh/) topic, a Discord or Slack webhook, or anything that accepts a plain-text POST. Without `--apply` the message ends in `[log only]`, and every restart reports the first choice again, since nothing is saved. A failed send is logged and not retried. |
 
+Containers can set `ZEROBILL_OWNER`, `ZEROBILL_RUNNER`, `ZEROBILL_BLACKSMITH` (`true`)
+and `ZEROBILL_NOTIFY` instead; when `ZEROBILL_OWNER` is set the file is not read.
+
 State lives in `~/.local/state/zerobill` (`$XDG_STATE_HOME/zerobill`): a cache of this
 month's jobs, the last decision per variable, and pauses.
 
