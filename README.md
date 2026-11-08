@@ -64,12 +64,15 @@ image `ghcr.io/morhaf-ko/zerobill` with Docker.
 
 1. Sign in with the [GitHub CLI](https://cli.github.com/): `gh auth login`. zerobill uses
    that login, so there is no token to create.
-2. Create `~/.config/zerobill/config.yaml`:
+2. Create your config with three short prompts:
 
-   ```yaml
-   owner: your-org      # your GitHub user or organization
-   runner: home-ci      # optional: your self-hosted runner's label
+   ```sh
+   zerobill init
    ```
+
+   Enter your GitHub user or organization, an optional runner label, and whether
+   you use Blacksmith. This creates `~/.config/zerobill/config.yaml` and leaves
+   existing configs untouched. You can also [write the config yourself](docs/reference.md#config).
 
 3. Set the variable in each repository before pointing its workflows at it. A workflow
    that reads an unset variable gets an empty `runs-on` and fails.
@@ -115,6 +118,7 @@ image `ghcr.io/morhaf-ko/zerobill` with Docker.
 | **Your own runner** | `runner: home-ci` | Install GitHub's runner with that label; see the [self-hosted runner guide](docs/homelab.md). zerobill uses it first and moves jobs away once it stops. |
 | **Blacksmith** | `blacksmith: true` | Install the [Blacksmith](https://www.blacksmith.sh/) GitHub app. Its 3,000 free minutes are shared with GitHub's so both last the month. |
 | **Notifications** | `notify: https://ntfy.sh/your-topic` | Get a message whenever zerobill changes runner. Discord and Slack webhook URLs work too. |
+| **Reserve** | `reserve_percent: 10` | Keep this percentage of each free tier in reserve. Default: 10; accepts integers from 0 to 99. Zero uses the full allowance. |
 
 Keep dependency bots on the hosted tiers, so your machine stays free for you:
 
@@ -126,6 +130,7 @@ runs-on: ${{ github.actor == 'renovate[bot]' && vars.BOT_RUNNER || vars.CI_RUNNE
 
 | Command | |
 | --- | --- |
+| `zerobill init` | Create a config with guided prompts; never overwrites an existing file |
 | `zerobill status` | Free minutes, month-end projection, current choice and problems |
 | `zerobill run [--apply]` | Keep `CI_RUNNER` and `BOT_RUNNER` on the best free runner |
 | `zerobill pause runner 7d` | Take a runner out, for example while you travel; `zerobill resume runner` brings it back. With Docker: `docker compose exec zerobill zerobill pause runner 7d` |
@@ -141,8 +146,9 @@ for an organization (or `-s user` for a personal account) to read runners and bi
 `zerobill status` tells you when that is missing. A `GITHUB_TOKEN` works too; see
 [security](SECURITY.md).
 
-**Can it cost me money?** It keeps 10% of every free tier in reserve and moves jobs off a
-tier before it runs out. When every free tier is used, jobs wait for your runner. Without
+**Can it cost me money?** By default it keeps 10% of every free tier in reserve;
+change that with `reserve_percent`. This buffer helps cover running jobs and delayed
+usage reporting; it cannot guarantee zero charges. When every free tier is used, jobs wait for your runner. Without
 a runner they stay on GitHub-hosted, which GitHub Free blocks at the allowance and paid
 plans bill.
 

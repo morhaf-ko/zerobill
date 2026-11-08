@@ -24,11 +24,11 @@ import (
 var now = time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 
 func TestBuild(t *testing.T) {
-	providers, routes := build(&config.Config{Owner: "acme"}, 2000)
+	providers, routes := build(&config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme"}, 2000)
 	if len(providers) != 1 || routes[0].Fallback.Name != "github" || len(routes[1].Providers) != 1 {
 		t.Fatalf("GitHub only: %+v %+v", providers, routes)
 	}
-	providers, routes = build(&config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}, 3000)
+	providers, routes = build(&config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", Runner: "home-ci", Blacksmith: true}, 3000)
 	var names []string
 	for _, p := range routes[0].Providers {
 		names = append(names, p.Name)
@@ -36,6 +36,32 @@ func TestBuild(t *testing.T) {
 	if !slices.Equal(names, []string{"runner", "blacksmith", "github"}) || len(providers) != 3 ||
 		routes[1].Variable != "BOT_RUNNER" || len(routes[1].Providers) != 2 || routes[1].Fallback.Name != "runner" || providers[2].Monthly != 3000 {
 		t.Fatalf("full: %+v %+v", providers, routes)
+	}
+}
+
+func TestConfiguredReserveRoutesAndHolds(t *testing.T) {
+	for _, reserve := range []int{0, 25, 99} {
+		_, routes := build(&config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true, ReservePercent: config.Percent(reserve)}, 2000)
+		for _, rt := range routes {
+			states := map[string]policy.State{"runner": {Registered: true}}
+			for _, p := range rt.Providers {
+				if p.Kind == policy.Metered {
+					want := p.Monthly * float64(100-reserve) / 100
+					if p.Limit() != want {
+						t.Fatalf("reserve %d, provider %s limit %v, want %v", reserve, p.Name, p.Limit(), want)
+					}
+					states[p.Name] = policy.State{UsedMinutes: want}
+				}
+			}
+			d := policy.Decide(rt, states)
+			if d.Provider != "runner" {
+				t.Fatalf("reserve %d: %+v", reserve, d)
+			}
+			held, ok := policy.Hold(d, policy.Applied{Provider: "blacksmith", Label: blacksmithLabel, Since: now}, rt, states, now)
+			if ok || held.Provider != "runner" {
+				t.Fatalf("reserve %d held exhausted provider: %+v", reserve, held)
+			}
+		}
 	}
 }
 
@@ -83,7 +109,7 @@ func newTestController(t *testing.T, write bool) (*controller, *variables) {
 	t.Cleanup(srv.Close)
 	gh := github.New("t")
 	gh.BaseURL = srv.URL
-	a := &app{cfg: &config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}, gh: gh, stateDir: t.TempDir()}
+	a := &app{cfg: &config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", Runner: "home-ci", Blacksmith: true}, gh: gh, stateDir: t.TempDir()}
 	a.providers, a.routes = build(a.cfg, 2000)
 	c, err := newController(a, write)
 	if err != nil {
@@ -276,7 +302,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestRender(t *testing.T) {
-	a := &app{cfg: &config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}}
+	a := &app{cfg: &config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", Runner: "home-ci", Blacksmith: true}}
 	a.providers, a.routes = build(a.cfg, 2000)
 	states := map[string]policy.State{"runner": {Online: true}, "blacksmith": {UsedMinutes: 1200}, "github": {UsedMinutes: 200}}
 	found := discover.Result{Repos: []discover.Repo{{Name: "acme/app"}}, Fixed: []string{"acme/app .github/workflows/ci.yml:5: ubuntu-latest"}}

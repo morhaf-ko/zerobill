@@ -19,9 +19,6 @@ const (
 	WarmRetryAfter = 6 * time.Hour
 	// MinHold is how long an applied label stays while it is still usable.
 	MinHold = 15 * time.Minute
-	// ReservePercent of a free tier is kept back so a job never starts on a tier
-	// that runs dry mid-job.
-	ReservePercent = 10
 )
 
 // Kind distinguishes hardware you own from providers that meter minutes.
@@ -38,11 +35,12 @@ type Provider struct {
 	Label string
 	Kind  Kind
 	// Monthly is a metered provider's free minutes a month.
-	Monthly float64
+	Monthly        float64
+	ReservePercent int
 }
 
 // Limit is the metered minutes usable before the reserve.
-func (p Provider) Limit() float64 { return p.Monthly * (100 - ReservePercent) / 100 }
+func (p Provider) Limit() float64 { return p.Monthly * float64(100-p.ReservePercent) / 100 }
 
 // State is what collectors observed about one provider, plus what the
 // controller remembers.

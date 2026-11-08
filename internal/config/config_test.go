@@ -33,12 +33,12 @@ func TestLoad(t *testing.T) {
 		return p
 	}
 	c, err := Load(write("owner: acme\nrunner: home-ci\nblacksmith: true\n"))
-	if err != nil || *c != (Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}) {
+	if err != nil || *c != (Config{Owner: "acme", Runner: "home-ci", Blacksmith: true, ReservePercent: DefaultReservePercent}) {
 		t.Fatalf("got %+v %v", c, err)
 	}
 	for body, want := range map[string]string{
 		"runner: home-ci\n":                "owner is required",
-		"owner: acme\nmode: switch\n":      "takes only owner, runner, blacksmith and notify",
+		"owner: acme\nmode: switch\n":      "takes only owner, runner, blacksmith, reserve_percent and notify",
 		"owner: acme\nnotify: ntfy.sh/x\n": "notify must be an http or https URL",
 		"owner: [\n":                       "config.yaml",
 	} {
@@ -46,12 +46,13 @@ func TestLoad(t *testing.T) {
 			t.Errorf("%q: got %v, want %q", body, err, want)
 		}
 	}
-	if _, err := Load(filepath.Join(dir, "missing.yaml")); err == nil || !strings.Contains(err.Error(), "owner: <your user or organization>") {
+	if _, err := Load(filepath.Join(dir, "missing.yaml")); err == nil || !strings.Contains(err.Error(), "zerobill init") {
 		t.Errorf("missing file: %v", err)
 	}
 }
 
 func TestFromEnv(t *testing.T) {
+	t.Setenv("ZEROBILL_RESERVE_PERCENT", "")
 	t.Setenv("ZEROBILL_OWNER", "")
 	if _, ok, err := FromEnv(); ok || err != nil {
 		t.Fatalf("unset owner: %v %v", ok, err)
@@ -61,11 +62,45 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv("ZEROBILL_BLACKSMITH", "true")
 	t.Setenv("ZEROBILL_NOTIFY", "https://ntfy.sh/x")
 	c, ok, err := FromEnv()
-	if !ok || err != nil || *c != (Config{Owner: "acme", Runner: "home-ci", Blacksmith: true, Notify: "https://ntfy.sh/x"}) {
+	if !ok || err != nil || *c != (Config{Owner: "acme", Runner: "home-ci", Blacksmith: true, Notify: "https://ntfy.sh/x", ReservePercent: DefaultReservePercent}) {
 		t.Fatalf("got %+v %v %v", c, ok, err)
 	}
 	t.Setenv("ZEROBILL_BLACKSMITH", "yes")
 	if _, _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "use true or false") {
 		t.Fatalf("bad bool: %v", err)
+	}
+}
+
+func TestReservePercent(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  int
+		valid bool
+	}{
+		{"", 10, true}, {"0", 0, true}, {"25", 25, true}, {"99", 99, true},
+		{"-1", 0, false}, {"100", 0, false}, {"1.5", 0, false}, {"1.0", 0, false}, {".nan", 0, false}, {"ten", 0, false},
+	} {
+		t.Run("value="+tt.value, func(t *testing.T) {
+			t.Setenv("ZEROBILL_OWNER", "acme")
+			t.Setenv("ZEROBILL_BLACKSMITH", "")
+			t.Setenv("ZEROBILL_NOTIFY", "")
+			t.Setenv("ZEROBILL_RESERVE_PERCENT", tt.value)
+			c, _, err := FromEnv()
+			if (err == nil) != tt.valid || (err == nil && int(c.ReservePercent) != tt.want) {
+				t.Fatalf("env: %+v %v", c, err)
+			}
+			body := "owner: acme\n"
+			if tt.value != "" {
+				body += "reserve_percent: " + tt.value + "\n"
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c, err = Load(path)
+			if (err == nil) != tt.valid || (err == nil && int(c.ReservePercent) != tt.want) {
+				t.Fatalf("file: %+v %v", c, err)
+			}
+		})
 	}
 }

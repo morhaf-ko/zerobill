@@ -4,15 +4,27 @@
 
 `~/.config/zerobill/config.yaml`, or `$XDG_CONFIG_HOME/zerobill/config.yaml`:
 
+```yaml
+owner: your-org
+runner: home-ci
+reserve_percent: 10
+```
+
+Run `zerobill init` to create it interactively. The owner is required; the runner
+is optional and Blacksmith defaults to off. Init uses a 10% reserve and leaves
+existing configs untouched. It does not sign in to GitHub or change workflows.
+
 | Key | Meaning |
 | --- | --- |
 | `owner` | Required. The GitHub user or organization whose private repositories zerobill routes. |
 | `runner` | The label of your self-hosted runners. Leave it out without one. |
 | `blacksmith` | `true` to use Blacksmith's free minutes too. |
+| `reserve_percent` | Percentage kept back from each free tier. Integer from 0 to 99; defaults to 10 when omitted. Zero uses the full allowance. |
 | `notify` | A URL told whenever a variable's choice changes: an [ntfy](https://ntfy.sh/) topic, a Discord or Slack webhook, or anything that accepts a plain-text POST. Without `--apply` the message ends in `[log only]`, and every restart reports the first choice again, since nothing is saved. A failed send is logged and not retried. |
 
-Containers can set `ZEROBILL_OWNER`, `ZEROBILL_RUNNER`, `ZEROBILL_BLACKSMITH` (`true`)
-and `ZEROBILL_NOTIFY` instead; when `ZEROBILL_OWNER` is set the file is not read.
+Containers can set `ZEROBILL_OWNER`, `ZEROBILL_RUNNER`, `ZEROBILL_BLACKSMITH` (`true`),
+`ZEROBILL_RESERVE_PERCENT` and `ZEROBILL_NOTIFY` instead; when `ZEROBILL_OWNER` is set
+the file is not read. The reserve has the same default and range.
 
 State lives in `~/.local/state/zerobill` (`$XDG_STATE_HOME/zerobill`): a cache of this
 month's jobs, the last decision per variable, and pauses.
@@ -32,7 +44,7 @@ signed-in user. For a narrower token, see [security](../SECURITY.md).
 | `CI_RUNNER` | Your runner, then Blacksmith, then GitHub-hosted (`ubuntu-latest`) |
 | `BOT_RUNNER` | Blacksmith, then GitHub-hosted |
 | Free minutes | GitHub: 2,000 on Free, 3,000 on Pro and Team, read from your plan. Blacksmith: 3,000. |
-| Reserve | 10% of each free tier is never used |
+| Reserve | Stop selecting a free tier at its configured limit: allowance × (100 − `reserve_percent`) / 100 |
 | Sharing | Among usable free tiers, the one with the smallest share used, so all last the month |
 | Nothing free | Jobs wait for your runner, or use GitHub-hosted without one |
 | Interval | Every 5 minutes |

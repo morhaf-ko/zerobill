@@ -32,6 +32,7 @@ func buildVersion() string {
 const usage = `zerobill keeps GitHub Actions jobs on free runners.
 
 usage:
+  zerobill init                         create a config with guided prompts
   zerobill [status]                     free minutes, current choices and problems
   zerobill run [--apply] [--health :8080]
                                         keep CI_RUNNER and BOT_RUNNER on the best free
@@ -41,8 +42,8 @@ usage:
   zerobill resume runner|blacksmith|github
   zerobill version
 
-Config: ~/.config/zerobill/config.yaml with owner, and optionally runner, blacksmith and
-notify; or ZEROBILL_OWNER, ZEROBILL_RUNNER, ZEROBILL_BLACKSMITH and ZEROBILL_NOTIFY.
+Config: ~/.config/zerobill/config.yaml with owner, and optionally runner, blacksmith,
+reserve_percent (default 10) and notify; or the matching ZEROBILL_* environment variables.
 GitHub access: GITHUB_TOKEN, else the GitHub CLI login (gh auth token).`
 
 func main() {
@@ -52,6 +53,8 @@ func main() {
 	}
 	var err error
 	switch cmd {
+	case "init":
+		err = initConfig(args, os.Stdin, os.Stdout)
 	case "status":
 		err = status(args)
 	case "run":
@@ -172,9 +175,9 @@ const (
 func build(cfg *config.Config, githubMinutes float64) ([]policy.Provider, []policy.Route) {
 	var hosted []policy.Provider
 	if cfg.Blacksmith {
-		hosted = append(hosted, policy.Provider{Name: "blacksmith", Label: blacksmithLabel, Kind: policy.Metered, Monthly: blacksmithFree})
+		hosted = append(hosted, policy.Provider{Name: "blacksmith", Label: blacksmithLabel, Kind: policy.Metered, Monthly: blacksmithFree, ReservePercent: int(cfg.ReservePercent)})
 	}
-	github := policy.Provider{Name: "github", Label: githubLabel, Kind: policy.Metered, Monthly: githubMinutes}
+	github := policy.Provider{Name: "github", Label: githubLabel, Kind: policy.Metered, Monthly: githubMinutes, ReservePercent: int(cfg.ReservePercent)}
 	hosted = append(hosted, github)
 	ci, fallback := hosted, github
 	if cfg.Runner != "" {
