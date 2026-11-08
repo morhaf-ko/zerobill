@@ -19,4 +19,6 @@ Verify a release before running it:
 shasum -a 256 --ignore-missing -c checksums.txt
 gh attestation verify zerobill_<version>_<os>_<arch>.tar.gz --repo morhaf-ko/zerobill \
   --signer-workflow morhaf-ko/zerobill/.github/workflows/release.yml
+gh attestation verify oci://ghcr.io/morhaf-ko/zerobill:<version> --repo morhaf-ko/zerobill \
+  --signer-workflow morhaf-ko/zerobill/.github/workflows/release.yml
 ```
