@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -31,7 +33,10 @@ func run(args []string) error {
 		switch {
 		case args[i] == "--apply":
 			write = true
-		case args[i] == "--health" && i+1 < len(args):
+		case args[i] == "--health":
+			if i+1 == len(args) || args[i+1] == "" {
+				return errors.New("--health needs an address, such as :8080")
+			}
 			i++
 			healthAddr = args[i]
 		default:
@@ -49,12 +54,15 @@ func run(args []string) error {
 	beat := &heartbeat{}
 	beat.mark(time.Now())
 	if healthAddr != "" {
-		srv := &http.Server{Addr: healthAddr, Handler: beat, ReadHeaderTimeout: 5 * time.Second}
+		// Bind before the first check, so a bad address fails before anything is written.
+		ln, err := net.Listen("tcp", healthAddr)
+		if err != nil {
+			return fmt.Errorf("--health: %w", err)
+		}
+		srv := &http.Server{Handler: beat, ReadHeaderTimeout: 5 * time.Second}
 		go func() {
-			if err := srv.ListenAndServe(); err != nil {
-				fmt.Fprintln(os.Stderr, "zerobill: health:", err)
-				os.Exit(1)
-			}
+			// A failed probe endpoint must not stop routing.
+			fmt.Fprintln(os.Stderr, "zerobill: health:", srv.Serve(ln))
 		}()
 	}
 	tick := time.NewTicker(interval)

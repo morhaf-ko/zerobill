@@ -80,6 +80,6 @@ Run it on a different machine than your runner when you can, so a power cut ther
 not stop zerobill as well.
 
 To watch zerobill itself, start it with `run --apply --health :8080`. It then serves
-`/healthz`, which answers `200` while its loop finished a check in the last 15 minutes
-and `503` otherwise. Point an uptime monitor or a Kubernetes probe at it. It reports the
+`/healthz`, which answers `200` while its loop started or finished a check in the last
+15 minutes and `503` otherwise. Point an uptime monitor or a Kubernetes probe at it. It reports the
 loop, not GitHub: read failures stay in the log, since restarting would not fix them.
