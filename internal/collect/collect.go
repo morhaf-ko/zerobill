@@ -103,6 +103,7 @@ func IsOrg(gh *github.Client, owner string) (bool, error) {
 
 type runner struct {
 	Status string        `json:"status"`
+	Busy   bool          `json:"busy"`
 	Labels []runnerLabel `json:"labels"`
 }
 
@@ -154,6 +155,7 @@ func (c *Collector) selfHosted(label string) (policy.State, []Run, error) {
 				if slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return l.Name == label }) {
 					s.Registered = true
 					s.Online = s.Online || r.Status == "online"
+					s.Idle = s.Idle || (r.Status == "online" && !r.Busy)
 				}
 			}
 			return nil

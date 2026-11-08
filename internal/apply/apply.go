@@ -51,9 +51,11 @@ type State struct {
 	// Stalled holds when the self-hosted runner last had a queue stall with no
 	// runner online; it is cleared when one is online.
 	Stalled map[string]time.Time `json:"stalled,omitempty"`
-	// Idle marks self-hosted labels seen with a runner online, so the pool keeps
-	// idle runners and its return shows up without sending it a job.
-	Idle map[string]bool `json:"idle,omitempty"`
+	// IdleSince holds when a runner with the label was first seen idle in the
+	// current unbroken run of checks. Warm marks labels whose pool kept an idle
+	// runner across two checks, so its return shows up without a probe job.
+	IdleSince map[string]time.Time `json:"idle_since,omitempty"`
+	Warm      map[string]bool      `json:"warm,omitempty"`
 	// Cancelled holds runs cancelled to leave a stale label, awaiting their rerun.
 	Cancelled map[string]Moved `json:"cancelled,omitempty"`
 	// Rerun holds runs already moved once; they are never moved again, so a job

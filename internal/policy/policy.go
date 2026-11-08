@@ -45,11 +45,13 @@ func (p Provider) Limit() float64 { return p.Monthly * (100 - ReservePercent) / 
 // controller remembers.
 type State struct {
 	Online, Registered bool
+	// Idle is set when an online runner with the label has no job.
+	Idle bool
 	// UsedMinutes is a metered provider's billed minutes this month.
 	UsedMinutes  float64
 	OldestQueued time.Duration
 	// Stalled is set after a queue stall until a runner with the label is online,
-	// or for RetryAfter when the pool never shows idle runners.
+	// or for RetryAfter when the pool keeps no idle runners.
 	Stalled bool
 	// Paused holds why the user took the provider out of rotation.
 	Paused string
