@@ -11,8 +11,6 @@ import (
 const (
 	// MaxQueueWait marks a self-hosted runner down when a job has waited longer.
 	MaxQueueWait = 10 * time.Minute
-	// RetryAfter is how long a queue stall keeps a runner down unless one comes online.
-	RetryAfter = time.Hour
 	// MinHold is how long an applied label stays while it is still usable.
 	MinHold = 15 * time.Minute
 	// ReservePercent of a free tier is kept back so a job never starts on a tier
@@ -47,7 +45,7 @@ type State struct {
 	// UsedMinutes is a metered provider's billed minutes this month.
 	UsedMinutes  float64
 	OldestQueued time.Duration
-	// Stalled is set within RetryAfter of a queue stall with no runner online.
+	// Stalled is set after a queue stall until a runner with the label is online.
 	Stalled bool
 	// Paused holds why the user took the provider out of rotation.
 	Paused string

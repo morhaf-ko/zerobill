@@ -233,8 +233,9 @@ func reads(r discover.Repo, variable string) bool {
 	return false
 }
 
-// adjust adds what zerobill remembers to the observed states: pauses and the
-// queue-stall latch of the self-hosted runner. Problems are added to errs.
+// adjust adds what zerobill remembers to the observed states: pauses, and a
+// queue stall that keeps the self-hosted runner down until one of its runners
+// is online again. Problems are added to errs.
 func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.State, errs map[string]string) map[string]policy.State {
 	set, err := pauses.Load(a.pausePath())
 	if err != nil {
@@ -257,13 +258,7 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 			case s.OldestQueued > policy.MaxQueueWait:
 				st.Stalled[p.Name] = now
 			}
-			if at, ok := st.Stalled[p.Name]; ok {
-				if now.Sub(at) < policy.RetryAfter {
-					s.Stalled = true
-				} else {
-					delete(st.Stalled, p.Name)
-				}
-			}
+			_, s.Stalled = st.Stalled[p.Name]
 		}
 		s.Paused = paused[p.Name]
 		states[p.Name] = s

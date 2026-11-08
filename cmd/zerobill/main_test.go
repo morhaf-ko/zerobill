@@ -141,7 +141,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	}
 }
 
-func TestQueueStallLatchesUntilARunnerIsOnline(t *testing.T) {
+func TestQueueStallLastsUntilARunnerIsOnline(t *testing.T) {
 	c, _ := newTestController(t, false)
 	steps := []struct {
 		at    time.Duration
@@ -151,9 +151,9 @@ func TestQueueStallLatchesUntilARunnerIsOnline(t *testing.T) {
 		{0, policy.State{}, "home-ci"},
 		{5 * time.Minute, policy.State{OldestQueued: 11 * time.Minute}, "blacksmith-2vcpu-ubuntu-2404"},
 		{30 * time.Minute, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
-		{66 * time.Minute, policy.State{}, "home-ci"},
-		{90 * time.Minute, policy.State{OldestQueued: 11 * time.Minute}, "blacksmith-2vcpu-ubuntu-2404"},
-		{110 * time.Minute, policy.State{Online: true, Registered: true}, "home-ci"},
+		{8 * time.Hour, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
+		{8*time.Hour + 5*time.Minute, policy.State{Online: true, Registered: true}, "home-ci"},
+		{8*time.Hour + 30*time.Minute, policy.State{}, "home-ci"},
 	}
 	for _, s := range steps {
 		if got := step(t, c, s.at, result(s.s)).Routes[0].Label; got != s.label {
