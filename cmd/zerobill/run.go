@@ -233,8 +233,11 @@ func reads(r discover.Repo, variable string) bool {
 	return false
 }
 
-// adjust adds what zerobill remembers to the observed states: pauses and the
-// queue-stall latch of the self-hosted runner. Problems are added to errs.
+// adjust adds what zerobill remembers to the observed states: pauses, and a
+// queue stall that keeps the self-hosted runner down. A warm pool, one that
+// keeps idle runners, stays down until a runner is online again, so its return
+// is noticed without a probe job; a pool that only registers runners for jobs
+// is retried RetryAfter after it stalled. Problems are added to errs.
 func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.State, errs map[string]string) map[string]policy.State {
 	set, err := pauses.Load(a.pausePath())
 	if err != nil {
@@ -244,6 +247,12 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 	if st.Stalled == nil {
 		st.Stalled = map[string]time.Time{}
 	}
+	if st.IdleSince == nil {
+		st.IdleSince = map[string]time.Time{}
+	}
+	if st.Warm == nil {
+		st.Warm = map[string]bool{}
+	}
 	states := make(map[string]policy.State, len(observed))
 	for _, p := range a.providers {
 		s, ok := observed[p.Name]
@@ -251,19 +260,26 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 			continue
 		}
 		if p.Kind == policy.SelfHosted {
+			// A per-job runner is idle only for moments, so a pool counts as warm
+			// after an idle runner is seen on checks an interval apart.
+			if since, ok := st.IdleSince[p.Label]; s.Idle && ok && now.Sub(since) >= interval {
+				st.Warm[p.Label] = true
+			} else if s.Idle && !ok {
+				st.IdleSince[p.Label] = now
+			} else if !s.Idle {
+				delete(st.IdleSince, p.Label)
+			}
+			_, stalled := st.Stalled[p.Name]
 			switch {
 			case s.Online:
 				delete(st.Stalled, p.Name)
-			case s.OldestQueued > policy.MaxQueueWait:
+			case s.OldestQueued > policy.MaxQueueWait && !stalled:
 				st.Stalled[p.Name] = now
 			}
-			if at, ok := st.Stalled[p.Name]; ok {
-				if now.Sub(at) < policy.RetryAfter {
-					s.Stalled = true
-				} else {
-					delete(st.Stalled, p.Name)
-				}
+			if at, ok := st.Stalled[p.Name]; ok && !st.Warm[p.Label] && now.Sub(at) >= policy.RetryAfter {
+				delete(st.Stalled, p.Name)
 			}
+			_, s.Stalled = st.Stalled[p.Name]
 		}
 		s.Paused = paused[p.Name]
 		states[p.Name] = s

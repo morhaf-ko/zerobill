@@ -11,7 +11,8 @@ import (
 const (
 	// MaxQueueWait marks a self-hosted runner down when a job has waited longer.
 	MaxQueueWait = 10 * time.Minute
-	// RetryAfter is how long a queue stall keeps a runner down unless one comes online.
+	// RetryAfter is when a stalled pool that never shows idle runners is tried
+	// again, since it only registers a runner once a job arrives.
 	RetryAfter = time.Hour
 	// MinHold is how long an applied label stays while it is still usable.
 	MinHold = 15 * time.Minute
@@ -44,10 +45,13 @@ func (p Provider) Limit() float64 { return p.Monthly * (100 - ReservePercent) / 
 // controller remembers.
 type State struct {
 	Online, Registered bool
+	// Idle is set when an online runner with the label has no job.
+	Idle bool
 	// UsedMinutes is a metered provider's billed minutes this month.
 	UsedMinutes  float64
 	OldestQueued time.Duration
-	// Stalled is set within RetryAfter of a queue stall with no runner online.
+	// Stalled is set after a queue stall until a runner with the label is online,
+	// or for RetryAfter when the pool keeps no idle runners.
 	Stalled bool
 	// Paused holds why the user took the provider out of rotation.
 	Paused string
