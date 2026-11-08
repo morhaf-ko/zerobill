@@ -9,6 +9,15 @@ import (
 // Write replaces path with raw, readable only by its owner, through a temporary
 // file in the same directory.
 func Write(path string, raw []byte) error {
+	return write(path, raw, true)
+}
+
+// Create publishes a complete file only if path does not already exist.
+func Create(path string, raw []byte) error {
+	return write(path, raw, false)
+}
+
+func write(path string, raw []byte, replace bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -24,5 +33,8 @@ func Write(path string, raw []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if replace {
+		return os.Rename(tmp.Name(), path)
+	}
+	return os.Link(tmp.Name(), path)
 }

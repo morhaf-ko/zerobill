@@ -1,4 +1,4 @@
-// Package config loads zerobill's three-line configuration.
+// Package config loads zerobill's configuration.
 package config
 
 import (
@@ -8,22 +8,27 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/morhaf-ko/zerobill/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
+
+const DefaultReservePercent = 10
 
 // Config is the user's choice of free capacity. Everything else is a convention.
 type Config struct {
 	// Owner is the organization or user whose CI zerobill routes.
 	Owner string `yaml:"owner"`
 	// Runner is the label of the user's self-hosted runners; empty without one.
-	Runner string `yaml:"runner"`
+	Runner string `yaml:"runner,omitempty"`
 	// Blacksmith adds Blacksmith's free minutes.
-	Blacksmith bool `yaml:"blacksmith"`
+	Blacksmith     bool `yaml:"blacksmith,omitempty"`
+	ReservePercent int  `yaml:"reserve_percent"`
 	// Notify is an ntfy topic, Discord or Slack webhook, or any URL that takes a
 	// plain-text POST, told whenever zerobill changes its choice.
-	Notify string `yaml:"notify"`
+	Notify string `yaml:"notify,omitempty"`
 }
 
 // Path returns the config file: $XDG_CONFIG_HOME/zerobill/config.yaml, else
@@ -53,19 +58,32 @@ func xdg(env, fallback, file string) (string, error) {
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("no config at %s; create it with one line: owner: <your user or organization>", path)
+		return nil, fmt.Errorf("no config at %s; run zerobill init", path)
 	}
 	if err != nil {
 		return nil, err
 	}
-	var c Config
+	var file struct {
+		Owner, Runner, Notify string
+		Blacksmith            bool
+		ReservePercent        yaml.Node `yaml:"reserve_percent"`
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
-	if err := dec.Decode(&c); err != nil {
+	if err := dec.Decode(&file); err != nil {
 		if strings.Contains(err.Error(), "not found in type") {
-			return nil, fmt.Errorf("%s: %w; the config takes only owner, runner, blacksmith and notify", path, err)
+			return nil, fmt.Errorf("%s: %w; the config takes only owner, runner, blacksmith, reserve_percent and notify", path, err)
 		}
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	c := Config{Owner: file.Owner, Runner: file.Runner, Blacksmith: file.Blacksmith, Notify: file.Notify, ReservePercent: DefaultReservePercent}
+	if node := file.ReservePercent; node.Kind != 0 {
+		if node.Tag != "!!int" {
+			return nil, fmt.Errorf("%s: reserve_percent must be an integer between 0 and 99", path)
+		}
+		if err := node.Decode(&c.ReservePercent); err != nil {
+			return nil, fmt.Errorf("%s: reserve_percent must be an integer between 0 and 99", path)
+		}
 	}
 	if err := c.check(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -73,13 +91,19 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// FromEnv reads the config from ZEROBILL_OWNER, ZEROBILL_RUNNER,
-// ZEROBILL_BLACKSMITH and ZEROBILL_NOTIFY, for containers that pass settings as
-// environment variables. It reports false when ZEROBILL_OWNER is unset.
+// FromEnv reads ZEROBILL_* settings for containers and reports false when
+// ZEROBILL_OWNER is unset.
 func FromEnv() (*Config, bool, error) {
-	c := Config{Owner: os.Getenv("ZEROBILL_OWNER"), Runner: os.Getenv("ZEROBILL_RUNNER"), Notify: os.Getenv("ZEROBILL_NOTIFY")}
+	c := Config{Owner: os.Getenv("ZEROBILL_OWNER"), Runner: os.Getenv("ZEROBILL_RUNNER"), Notify: os.Getenv("ZEROBILL_NOTIFY"), ReservePercent: DefaultReservePercent}
 	if c.Owner == "" {
 		return nil, false, nil
+	}
+	if v := os.Getenv("ZEROBILL_RESERVE_PERCENT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, true, errors.New("ZEROBILL_RESERVE_PERCENT must be an integer between 0 and 99")
+		}
+		c.ReservePercent = n
 	}
 	switch v := os.Getenv("ZEROBILL_BLACKSMITH"); v {
 	case "", "false":
@@ -98,8 +122,23 @@ func (c *Config) check() error {
 	if c.Owner == "" {
 		return errors.New("owner is required")
 	}
+	if c.ReservePercent < 0 || c.ReservePercent > 99 {
+		return errors.New("reserve_percent must be an integer between 0 and 99")
+	}
 	if u, err := url.Parse(c.Notify); c.Notify != "" && (err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "") {
 		return errors.New("notify must be an http or https URL")
 	}
 	return nil
+}
+
+// Create writes a validated config without replacing an existing file or symlink.
+func Create(path string, c Config) error {
+	if err := c.check(); err != nil {
+		return err
+	}
+	raw, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return atomicfile.Create(path, raw)
 }

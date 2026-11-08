@@ -8,8 +8,8 @@ import (
 
 var (
 	runner     = Provider{Name: "runner", Label: "home-ci", Kind: SelfHosted}
-	blacksmith = Provider{Name: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Kind: Metered, Monthly: 3000}
-	github     = Provider{Name: "github", Label: "ubuntu-latest", Kind: Metered, Monthly: 2000}
+	blacksmith = Provider{Name: "blacksmith", Label: "blacksmith-2vcpu-ubuntu-2404", Kind: Metered, Monthly: 3000, ReservePercent: 10}
+	github     = Provider{Name: "github", Label: "ubuntu-latest", Kind: Metered, Monthly: 2000, ReservePercent: 10}
 	ci         = Route{Variable: "CI_RUNNER", Providers: []Provider{runner, blacksmith, github}, Fallback: runner}
 )
 
