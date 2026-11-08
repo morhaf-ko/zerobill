@@ -50,3 +50,22 @@ func TestLoad(t *testing.T) {
 		t.Errorf("missing file: %v", err)
 	}
 }
+
+func TestFromEnv(t *testing.T) {
+	t.Setenv("ZEROBILL_OWNER", "")
+	if _, ok, err := FromEnv(); ok || err != nil {
+		t.Fatalf("unset owner: %v %v", ok, err)
+	}
+	t.Setenv("ZEROBILL_OWNER", "acme")
+	t.Setenv("ZEROBILL_RUNNER", "home-ci")
+	t.Setenv("ZEROBILL_BLACKSMITH", "true")
+	t.Setenv("ZEROBILL_NOTIFY", "https://ntfy.sh/x")
+	c, ok, err := FromEnv()
+	if !ok || err != nil || *c != (Config{Owner: "acme", Runner: "home-ci", Blacksmith: true, Notify: "https://ntfy.sh/x"}) {
+		t.Fatalf("got %+v %v %v", c, ok, err)
+	}
+	t.Setenv("ZEROBILL_BLACKSMITH", "yes")
+	if _, _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "use true or false") {
+		t.Fatalf("bad bool: %v", err)
+	}
+}

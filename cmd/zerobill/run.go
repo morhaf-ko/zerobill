@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/morhaf-ko/zerobill/internal/apply"
@@ -24,12 +28,20 @@ const (
 )
 
 func run(args []string) error {
-	write := false
-	for _, arg := range args {
-		if arg != "--apply" {
-			return fmt.Errorf("unknown argument %q; run takes only --apply", arg)
+	write, healthAddr := false, ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--apply":
+			write = true
+		case args[i] == "--health":
+			if i+1 == len(args) || args[i+1] == "" {
+				return errors.New("--health needs an address, such as :8080")
+			}
+			i++
+			healthAddr = args[i]
+		default:
+			return fmt.Errorf("unknown argument %q; run takes --apply and --health ADDRESS", args[i])
 		}
-		write = true
 	}
 	a, err := load(true)
 	if err != nil {
@@ -38,6 +50,20 @@ func run(args []string) error {
 	c, err := newController(a, write)
 	if err != nil {
 		return err
+	}
+	beat := &heartbeat{}
+	beat.mark(time.Now())
+	if healthAddr != "" {
+		// Bind before the first check, so a bad address fails before anything is written.
+		ln, err := net.Listen("tcp", healthAddr)
+		if err != nil {
+			return fmt.Errorf("--health: %w", err)
+		}
+		srv := &http.Server{Handler: beat, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			// A failed probe endpoint must not stop routing.
+			fmt.Fprintln(os.Stderr, "zerobill: health:", srv.Serve(ln))
+		}()
 	}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -56,8 +82,32 @@ func run(args []string) error {
 		if err := c.step(os.Stdout, time.Now().UTC(), a.col.Observe(a.providers)); err != nil {
 			return err
 		}
+		beat.mark(time.Now())
 		<-tick.C
 	}
+}
+
+// heartbeat answers /healthz with whether the loop finished a check recently.
+// It reports the loop, not GitHub: a GitHub outage is logged, and restarting
+// zerobill would not fix it.
+type heartbeat struct{ last atomic.Int64 }
+
+// staleAfter allows a slow first check, such as a cold month of Blacksmith jobs.
+const staleAfter = 3 * interval
+
+func (h *heartbeat) mark(t time.Time) { h.last.Store(t.UnixNano()) }
+
+func (h *heartbeat) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/healthz" {
+		http.NotFound(w, r)
+		return
+	}
+	since := time.Since(time.Unix(0, h.last.Load())).Round(time.Second)
+	if since > staleAfter {
+		http.Error(w, fmt.Sprintf("no check for %s", since), http.StatusServiceUnavailable)
+		return
+	}
+	fmt.Fprintf(w, "ok, last check %s ago\n", since)
 }
 
 func names(repos []discover.Repo) []string {
