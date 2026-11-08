@@ -71,8 +71,8 @@ image `ghcr.io/morhaf-ko/zerobill` with Docker.
    runner: home-ci      # optional: your self-hosted runner's label
    ```
 
-3. Create the variable in each repository, then point its workflows at it. Set it first:
-   a workflow that reads an unset variable gets an empty `runs-on` and fails.
+3. Set the variable in each repository before pointing its workflows at it. A workflow
+   that reads an unset variable gets an empty `runs-on` and fails.
 
    ```sh
    gh variable set CI_RUNNER --body ubuntu-latest --repo your-org/your-repo
@@ -90,7 +90,7 @@ image `ghcr.io/morhaf-ko/zerobill` with Docker.
    ```
 
 5. Run it on a machine that stays on. First watch what it would do; it logs one decision
-   every 5 minutes and changes nothing:
+   every 5 minutes and changes nothing on GitHub:
 
    ```sh
    zerobill run
