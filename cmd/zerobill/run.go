@@ -234,8 +234,10 @@ func reads(r discover.Repo, variable string) bool {
 }
 
 // adjust adds what zerobill remembers to the observed states: pauses, and a
-// queue stall that keeps the self-hosted runner down until one of its runners
-// is online again. Problems are added to errs.
+// queue stall that keeps the self-hosted runner down. A pool seen with idle
+// runners stays down until one is online again, so its return is noticed
+// without a probe job; a pool that only registers runners for jobs is retried
+// after RetryAfter. Problems are added to errs.
 func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.State, errs map[string]string) map[string]policy.State {
 	set, err := pauses.Load(a.pausePath())
 	if err != nil {
@@ -244,6 +246,9 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 	paused := set.Active(now)
 	if st.Stalled == nil {
 		st.Stalled = map[string]time.Time{}
+	}
+	if st.Idle == nil {
+		st.Idle = map[string]bool{}
 	}
 	states := make(map[string]policy.State, len(observed))
 	for _, p := range a.providers {
@@ -255,8 +260,14 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 			switch {
 			case s.Online:
 				delete(st.Stalled, p.Name)
+				if s.OldestQueued == 0 {
+					st.Idle[p.Label] = true
+				}
 			case s.OldestQueued > policy.MaxQueueWait:
 				st.Stalled[p.Name] = now
+			}
+			if at, ok := st.Stalled[p.Name]; ok && !st.Idle[p.Label] && now.Sub(at) >= policy.RetryAfter {
+				delete(st.Stalled, p.Name)
 			}
 			_, s.Stalled = st.Stalled[p.Name]
 		}

@@ -141,24 +141,38 @@ func TestDryRunWritesNothing(t *testing.T) {
 	}
 }
 
-func TestQueueStallLastsUntilARunnerIsOnline(t *testing.T) {
-	c, _ := newTestController(t, false)
-	steps := []struct {
+func TestQueueStallRecovery(t *testing.T) {
+	type at struct {
 		at    time.Duration
 		s     policy.State
 		label string
-	}{
-		{0, policy.State{}, "home-ci"},
-		{5 * time.Minute, policy.State{OldestQueued: 11 * time.Minute}, "blacksmith-2vcpu-ubuntu-2404"},
-		{30 * time.Minute, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
-		{8 * time.Hour, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
-		{8*time.Hour + 5*time.Minute, policy.State{Online: true, Registered: true}, "home-ci"},
-		{8*time.Hour + 30*time.Minute, policy.State{}, "home-ci"},
 	}
-	for _, s := range steps {
-		if got := step(t, c, s.at, result(s.s)).Routes[0].Label; got != s.label {
-			t.Fatalf("at %s: got %s", s.at, got)
-		}
+	idle := policy.State{Online: true, Registered: true}
+	stall := policy.State{OldestQueued: 11 * time.Minute}
+	for name, steps := range map[string][]at{
+		// Warm runners were seen, so the pool stays down until one is back.
+		"pool with idle runners": {
+			{0, idle, "home-ci"},
+			{5 * time.Minute, stall, "blacksmith-2vcpu-ubuntu-2404"},
+			{8 * time.Hour, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
+			{8*time.Hour + 5*time.Minute, idle, "home-ci"},
+		},
+		// No runner is ever idle, so the pool is retried after an hour.
+		"per-job pool": {
+			{0, policy.State{}, "home-ci"},
+			{5 * time.Minute, stall, "blacksmith-2vcpu-ubuntu-2404"},
+			{30 * time.Minute, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
+			{66 * time.Minute, policy.State{}, "home-ci"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := newTestController(t, false)
+			for _, s := range steps {
+				if got := step(t, c, s.at, result(s.s)).Routes[0].Label; got != s.label {
+					t.Fatalf("at %s: got %s", s.at, got)
+				}
+			}
+		})
 	}
 }
 

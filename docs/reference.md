@@ -39,8 +39,9 @@ signed-in user. For a narrower token, see [security](../SECURITY.md).
 - A registered runner with your label is offline, or
 - a job has waited for the label more than 10 minutes. Runners created per job, such as
   GARM or Actions Runner Controller pools, register only when a job arrives, so this is
-  how zerobill notices they are gone. It stays down until a runner with the label is
-  online again, so an outage costs one wait, not one per hour.
+  how zerobill notices they are gone. A pool that keeps idle runners, such as GARM with
+  warm runners, then stays down until one is online again, so an outage costs one wait.
+  A pool that never shows idle runners is tried again after an hour.
 - `zerobill pause runner [duration]` takes it out until `zerobill resume runner`.
 
 A label stays applied for at least 15 minutes while it is still usable, so a flapping

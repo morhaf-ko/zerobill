@@ -48,9 +48,12 @@ func (w *Writer) Set(repo, name, label string) (bool, error) {
 type State struct {
 	// Routes holds the label applied per route, for the minimum hold.
 	Routes map[string]policy.Applied `json:"routes,omitempty"`
-	// Stalled holds when each on-demand provider last had a queue stall with no
-	// runner online.
+	// Stalled holds when the self-hosted runner last had a queue stall with no
+	// runner online; it is cleared when one is online.
 	Stalled map[string]time.Time `json:"stalled,omitempty"`
+	// Idle marks self-hosted labels seen with a runner online, so the pool keeps
+	// idle runners and its return shows up without sending it a job.
+	Idle map[string]bool `json:"idle,omitempty"`
 	// Cancelled holds runs cancelled to leave a stale label, awaiting their rerun.
 	Cancelled map[string]Moved `json:"cancelled,omitempty"`
 	// Rerun holds runs already moved once; they are never moved again, so a job
