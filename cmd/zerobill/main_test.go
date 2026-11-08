@@ -151,9 +151,10 @@ func TestQueueStallRecovery(t *testing.T) {
 	stall := policy.State{OldestQueued: 11 * time.Minute}
 	for name, steps := range map[string][]at{
 		// Warm runners stay idle across checks, so the pool stays down until one is back.
+		// The second check may come a little under an interval after a late first one.
 		"warm pool": {
 			{0, idle, "home-ci"},
-			{5 * time.Minute, idle, "home-ci"},
+			{4*time.Minute + 49*time.Second, idle, "home-ci"},
 			{10 * time.Minute, stall, "blacksmith-2vcpu-ubuntu-2404"},
 			{8 * time.Hour, policy.State{}, "blacksmith-2vcpu-ubuntu-2404"},
 			{8*time.Hour + 5*time.Minute, idle, "home-ci"},

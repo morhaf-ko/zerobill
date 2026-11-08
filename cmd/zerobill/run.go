@@ -261,8 +261,9 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 		}
 		if p.Kind == policy.SelfHosted {
 			// A per-job runner is idle only for moments, so a pool counts as warm
-			// after an idle runner is seen on checks an interval apart.
-			if since, ok := st.IdleSince[p.Label]; s.Idle && ok && now.Sub(since) >= interval {
+			// after an idle runner is seen on two consecutive checks. Half an
+			// interval allows for a check that started late.
+			if since, ok := st.IdleSince[p.Label]; s.Idle && ok && now.Sub(since) >= interval/2 {
 				st.Warm[p.Label] = true
 			} else if s.Idle && !ok {
 				st.IdleSince[p.Label] = now
