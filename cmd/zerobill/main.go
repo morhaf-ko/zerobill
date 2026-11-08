@@ -175,9 +175,9 @@ const (
 func build(cfg *config.Config, githubMinutes float64) ([]policy.Provider, []policy.Route) {
 	var hosted []policy.Provider
 	if cfg.Blacksmith {
-		hosted = append(hosted, policy.Provider{Name: "blacksmith", Label: blacksmithLabel, Kind: policy.Metered, Monthly: blacksmithFree, ReservePercent: int(cfg.ReservePercent)})
+		hosted = append(hosted, policy.Provider{Name: "blacksmith", Label: blacksmithLabel, Kind: policy.Metered, Monthly: blacksmithFree, ReservePercent: cfg.ReservePercent})
 	}
-	github := policy.Provider{Name: "github", Label: githubLabel, Kind: policy.Metered, Monthly: githubMinutes, ReservePercent: int(cfg.ReservePercent)}
+	github := policy.Provider{Name: "github", Label: githubLabel, Kind: policy.Metered, Monthly: githubMinutes, ReservePercent: cfg.ReservePercent}
 	hosted = append(hosted, github)
 	ci, fallback := hosted, github
 	if cfg.Runner != "" {

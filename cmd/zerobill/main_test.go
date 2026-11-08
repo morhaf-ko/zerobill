@@ -41,7 +41,7 @@ func TestBuild(t *testing.T) {
 
 func TestConfiguredReserveRoutesAndHolds(t *testing.T) {
 	for _, reserve := range []int{0, 25, 99} {
-		_, routes := build(&config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true, ReservePercent: config.Percent(reserve)}, 2000)
+		_, routes := build(&config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true, ReservePercent: reserve}, 2000)
 		for _, rt := range routes {
 			states := map[string]policy.State{"runner": {Registered: true}}
 			for _, p := range rt.Providers {

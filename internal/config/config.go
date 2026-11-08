@@ -17,21 +17,6 @@ import (
 
 const DefaultReservePercent = 10
 
-// Percent accepts only YAML integer scalars.
-type Percent int
-
-func (p *Percent) UnmarshalYAML(node *yaml.Node) error {
-	if node.Tag != "!!int" {
-		return errors.New("reserve_percent must be an integer between 0 and 99")
-	}
-	var n int
-	if err := node.Decode(&n); err != nil {
-		return errors.New("reserve_percent must be an integer between 0 and 99")
-	}
-	*p = Percent(n)
-	return nil
-}
-
 // Config is the user's choice of free capacity. Everything else is a convention.
 type Config struct {
 	// Owner is the organization or user whose CI zerobill routes.
@@ -39,8 +24,8 @@ type Config struct {
 	// Runner is the label of the user's self-hosted runners; empty without one.
 	Runner string `yaml:"runner,omitempty"`
 	// Blacksmith adds Blacksmith's free minutes.
-	Blacksmith     bool    `yaml:"blacksmith,omitempty"`
-	ReservePercent Percent `yaml:"reserve_percent"`
+	Blacksmith     bool `yaml:"blacksmith,omitempty"`
+	ReservePercent int  `yaml:"reserve_percent"`
 	// Notify is an ntfy topic, Discord or Slack webhook, or any URL that takes a
 	// plain-text POST, told whenever zerobill changes its choice.
 	Notify string `yaml:"notify,omitempty"`
@@ -78,14 +63,27 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := Config{ReservePercent: DefaultReservePercent}
+	var file struct {
+		Owner, Runner, Notify string
+		Blacksmith            bool
+		ReservePercent        yaml.Node `yaml:"reserve_percent"`
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
-	if err := dec.Decode(&c); err != nil {
+	if err := dec.Decode(&file); err != nil {
 		if strings.Contains(err.Error(), "not found in type") {
 			return nil, fmt.Errorf("%s: %w; the config takes only owner, runner, blacksmith, reserve_percent and notify", path, err)
 		}
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	c := Config{Owner: file.Owner, Runner: file.Runner, Blacksmith: file.Blacksmith, Notify: file.Notify, ReservePercent: DefaultReservePercent}
+	if node := file.ReservePercent; node.Kind != 0 {
+		if node.Tag != "!!int" {
+			return nil, fmt.Errorf("%s: reserve_percent must be an integer between 0 and 99", path)
+		}
+		if err := node.Decode(&c.ReservePercent); err != nil {
+			return nil, fmt.Errorf("%s: reserve_percent must be an integer between 0 and 99", path)
+		}
 	}
 	if err := c.check(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -105,7 +103,7 @@ func FromEnv() (*Config, bool, error) {
 		if err != nil {
 			return nil, true, errors.New("ZEROBILL_RESERVE_PERCENT must be an integer between 0 and 99")
 		}
-		c.ReservePercent = Percent(n)
+		c.ReservePercent = n
 	}
 	switch v := os.Getenv("ZEROBILL_BLACKSMITH"); v {
 	case "", "false":

@@ -86,7 +86,7 @@ func TestReservePercent(t *testing.T) {
 			t.Setenv("ZEROBILL_NOTIFY", "")
 			t.Setenv("ZEROBILL_RESERVE_PERCENT", tt.value)
 			c, _, err := FromEnv()
-			if (err == nil) != tt.valid || (err == nil && int(c.ReservePercent) != tt.want) {
+			if (err == nil) != tt.valid || (err == nil && c.ReservePercent != tt.want) {
 				t.Fatalf("env: %+v %v", c, err)
 			}
 			body := "owner: acme\n"
@@ -98,9 +98,21 @@ func TestReservePercent(t *testing.T) {
 				t.Fatal(err)
 			}
 			c, err = Load(path)
-			if (err == nil) != tt.valid || (err == nil && int(c.ReservePercent) != tt.want) {
+			if (err == nil) != tt.valid || (err == nil && c.ReservePercent != tt.want) {
 				t.Fatalf("file: %+v %v", c, err)
 			}
 		})
+	}
+}
+
+func TestRejectNullReserve(t *testing.T) {
+	for _, value := range []string{"null", "~", ""} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("owner: acme\nreserve_percent: "+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "reserve_percent must be an integer") {
+			t.Errorf("%q: want integer error, got %v", value, err)
+		}
 	}
 }
