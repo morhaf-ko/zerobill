@@ -68,9 +68,15 @@ image `ghcr.io/morhaf-ko/zerobill` with Docker.
 
    ```yaml
    owner: your-org      # your GitHub user or organization
+   runner: home-ci      # optional: your self-hosted runner's label
    ```
 
-3. In your workflows, replace fixed labels such as `runs-on: ubuntu-latest` with:
+3. Set the variable in each repository before pointing its workflows at it. A workflow
+   that reads an unset variable gets an empty `runs-on` and fails.
+
+   ```sh
+   gh variable set CI_RUNNER --body ubuntu-latest --repo your-org/your-repo
+   ```
 
    ```yaml
    runs-on: ${{ vars.CI_RUNNER }}
@@ -83,7 +89,14 @@ image `ghcr.io/morhaf-ko/zerobill` with Docker.
    zerobill status
    ```
 
-5. Keep it running on a machine that stays on. Without `--apply` it only logs:
+5. Run it on a machine that stays on. First watch what it would do; it logs one decision
+   every 5 minutes and changes nothing on GitHub:
+
+   ```sh
+   zerobill run
+   ```
+
+   When the decisions look right, let it act:
 
    ```sh
    zerobill run --apply
@@ -115,7 +128,7 @@ runs-on: ${{ github.actor == 'renovate[bot]' && vars.BOT_RUNNER || vars.CI_RUNNE
 | --- | --- |
 | `zerobill status` | Free minutes, month-end projection, current choice and problems |
 | `zerobill run [--apply]` | Keep `CI_RUNNER` and `BOT_RUNNER` on the best free runner |
-| `zerobill pause runner 7d` | Take a runner out, for example while you travel; `zerobill resume runner` brings it back |
+| `zerobill pause runner 7d` | Take a runner out, for example while you travel; `zerobill resume runner` brings it back. With Docker: `docker compose exec zerobill zerobill pause runner 7d` |
 
 ## FAQ
 
