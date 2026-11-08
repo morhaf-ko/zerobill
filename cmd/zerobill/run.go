@@ -234,10 +234,10 @@ func reads(r discover.Repo, variable string) bool {
 }
 
 // adjust adds what zerobill remembers to the observed states: pauses, and a
-// queue stall that keeps the self-hosted runner down. A warm pool, one that
-// keeps idle runners, stays down until a runner is online again, so its return
-// is noticed without a probe job; a pool that only registers runners for jobs
-// is retried RetryAfter after it stalled. Problems are added to errs.
+// queue stall that keeps the self-hosted runner down until a runner is online
+// again, or until it is retried: after RetryAfter for a pool that only registers
+// runners for jobs, after WarmRetryAfter for a warm pool, whose return shows up
+// without a probe job. Problems are added to errs.
 func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.State, errs map[string]string) map[string]policy.State {
 	set, err := pauses.Load(a.pausePath())
 	if err != nil {
@@ -261,14 +261,16 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 		}
 		if p.Kind == policy.SelfHosted {
 			// A per-job runner is idle only for moments, so a pool counts as warm
-			// after an idle runner is seen on two consecutive checks. Half an
-			// interval allows for a check that started late.
-			if since, ok := st.IdleSince[p.Label]; s.Idle && ok && now.Sub(since) >= interval/2 {
-				st.Warm[p.Label] = true
-			} else if s.Idle && !ok {
-				st.IdleSince[p.Label] = now
-			} else if !s.Idle {
+			// after an idle runner is seen on two consecutive checks. The window
+			// allows for a late check; an older sighting starts over.
+			since, ok := st.IdleSince[p.Label]
+			switch d := now.Sub(since); {
+			case !s.Idle:
 				delete(st.IdleSince, p.Label)
+			case ok && d >= interval/2 && d < 2*interval:
+				st.Warm[p.Label] = true
+			case !ok || d >= 2*interval:
+				st.IdleSince[p.Label] = now
 			}
 			_, stalled := st.Stalled[p.Name]
 			switch {
@@ -277,7 +279,11 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 			case s.OldestQueued > policy.MaxQueueWait && !stalled:
 				st.Stalled[p.Name] = now
 			}
-			if at, ok := st.Stalled[p.Name]; ok && !st.Warm[p.Label] && now.Sub(at) >= policy.RetryAfter {
+			retry := policy.RetryAfter
+			if st.Warm[p.Label] {
+				retry = policy.WarmRetryAfter
+			}
+			if at, ok := st.Stalled[p.Name]; ok && now.Sub(at) >= retry {
 				delete(st.Stalled, p.Name)
 			}
 			_, s.Stalled = st.Stalled[p.Name]
