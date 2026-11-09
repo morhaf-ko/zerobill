@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup and troubleshooting
+    url: https://github.com/morhaf-ko/zerobill/blob/main/docs/getting-started.md
+    about: Connect your first workflow and check common setup problems.
+  - name: Report a vulnerability privately
+    url: https://github.com/morhaf-ko/zerobill/security/advisories/new
+    about: Keep security reports and credentials out of public issues.

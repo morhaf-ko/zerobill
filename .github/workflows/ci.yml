@@ -31,6 +31,17 @@ jobs:
           distribution: goreleaser
           version: v2.20.0
           args: check
+      - name: Build release archives
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: v2.20.0
+          args: release --snapshot --clean --skip=changelog,docker,sign,sbom
+      - name: Check archive installation files
+        run: |
+          for archive in dist/*.tar.gz; do
+            tar -tzf "$archive" README.md SECURITY.md docs/getting-started.md docs/service.md docs/testing.md examples/acceptance.yml examples/config.yaml examples/env.example examples/compose.yaml examples/zerobill.service >/dev/null
+          done
       - name: Check workflow syntax
         run: >-
           docker run --rm -v "$PWD:/repo:ro" -w /repo

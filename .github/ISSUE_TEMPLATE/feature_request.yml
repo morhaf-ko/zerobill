@@ -1,0 +1,15 @@
+name: Feature request
+description: Describe the workflow problem you want zerobill to solve.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe your workflow and what blocks it, using synthetic names.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Explain the simplest behavior that would help, and any existing alternatives you tried.

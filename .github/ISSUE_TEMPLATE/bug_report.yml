@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible problem with setup, routing or documentation.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep tokens, webhook URLs, private repository names and live run logs out of public issues.
+        Report vulnerabilities through the security policy instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of zerobill version, or the container tag and digest.
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: How do you run zerobill?
+      options:
+        - Foreground CLI
+        - Linux service
+        - Docker Compose
+        - Other container runtime
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Use synthetic owners, repository names and labels.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Include sanitized error text and the credential source, never the credential itself.
+    validations:
+      required: true

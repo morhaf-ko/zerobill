@@ -4,7 +4,8 @@ Open an issue before a large change, so the approach can be agreed first. Small 
 
 - Keep `internal/policy` pure: no I/O, no clock reads.
 - Add a test with each behaviour change. Collector and writer tests serve recorded GitHub responses through `httptest`.
-- Run `go vet ./...` and `go test -race ./...` before pushing. CI also runs actionlint, an offline zizmor scan and `goreleaser check`.
+- Run `go vet ./...` and `go test -race ./...` before pushing. CI also checks workflow syntax, automation security and real release-archive contents.
+- Keep the README focused on setup and value. Put one end-to-end workflow in `docs/getting-started.md`; keep config and failure contracts in `docs/reference.md`. Test installation instructions against an extracted release archive.
 - Keep examples free of tokens, real repository names and logs from a live installation.
 
 Renovate proposes dependency updates on Mondays after a five-day release age, and majors wait for approval on its dependency dashboard. Nothing merges automatically, because the repository has no required status checks.
