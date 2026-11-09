@@ -4,7 +4,7 @@ You need one computer that stays on, not necessarily a new server. An existing
 Linux machine, NAS or VPS works. Docker is optional. Run only one controller for
 an owner: two controllers can overwrite each other's decisions and state.
 
-Try the [quick start](../README.md#quick-start) with one private repository first.
+Follow [getting started](getting-started.md) with one private repository first.
 Use the same release version for your CLI, config format and deployed image.
 For unreleased changes, follow [local testing](testing.md#local-testing) rather than
 mixing a development config with an older published binary or image.
@@ -148,7 +148,10 @@ docker compose logs --tail 20 zerobill
 ```
 
 Verify `"apply":true` and no errors. The named volume keeps cache, pauses, routing
-state and sent-warning records across restarts. Config changes require
+state and sent-warning records across restarts. The first Blacksmith scan on a new
+volume can take several minutes and emits its first routing log after collection;
+later checks reuse cached completed jobs. Check logs before assuming that an HTTP
+health response proves GitHub access or a completed routing decision. Config changes require
 `docker compose up -d` to recreate the container. To update to a published release,
 set the same chosen version in your CLI install and image tag, then run:
 

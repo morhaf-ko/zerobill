@@ -95,6 +95,11 @@ particular job can start.
 
 ## How a runner counts as down
 
+With no matching runner registered, zerobill initially assumes an on-demand pool
+will create one for a job. Selecting the self-hosted label at this point does not
+prove that a machine is online. An online observation and a successful job on that
+runner establish availability; a queue stall triggers the rules below.
+
 - A registered runner with your label is offline, or
 - a job has waited for the label longer than `queue_timeout` (default 10 minutes). Runners created per job, such as
   GARM or Actions Runner Controller pools, register only when a job arrives, so this is
@@ -124,7 +129,7 @@ zerobill does not automatically rescue jobs queued on `zerobill-wait`. It preven
 new jobs from using a metered tier; it does not pause existing executions.
 
 The free-capacity and outage limits are explained in the
-[README](../README.md#alerts-and-spending-protection).
+[README](../README.md#routing-and-spending-protection).
 
 ## What `run --apply` does
 

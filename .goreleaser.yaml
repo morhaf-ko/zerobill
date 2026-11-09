@@ -43,4 +43,4 @@ dockers_v2:
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .FullCommit }}"
       org.opencontainers.image.licenses: MIT
-      org.opencontainers.image.description: Keeps GitHub Actions on free runners.
+      org.opencontainers.image.description: Conserves GitHub Actions hosted minutes.

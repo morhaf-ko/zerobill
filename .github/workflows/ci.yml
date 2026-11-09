@@ -40,7 +40,7 @@ jobs:
       - name: Check archive installation files
         run: |
           for archive in dist/*.tar.gz; do
-            tar -tzf "$archive" README.md SECURITY.md docs/service.md docs/testing.md examples/config.yaml examples/env.example examples/compose.yaml examples/zerobill.service >/dev/null
+            tar -tzf "$archive" README.md SECURITY.md docs/getting-started.md docs/service.md docs/testing.md examples/acceptance.yml examples/config.yaml examples/env.example examples/compose.yaml examples/zerobill.service >/dev/null
           done
       - name: Check workflow syntax
         run: >-
