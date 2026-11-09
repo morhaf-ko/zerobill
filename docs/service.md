@@ -5,9 +5,9 @@ Linux machine, NAS or VPS works. Docker is optional. Run only one controller for
 an owner: two controllers can overwrite each other's decisions and state.
 
 Try the [quick start](../README.md#quick-start) with one private repository first.
-The new config format is unreleased until PR #20 and its release are published;
-use [local testing](testing.md#local-testing) for the candidate rather than mixing
-an unreleased config with an older binary or container image.
+Use the same release version for your CLI, config format and deployed image.
+For unreleased changes, follow [local testing](testing.md#local-testing) rather than
+mixing a development config with an older published binary or image.
 
 ## Choose where to run it
 

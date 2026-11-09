@@ -2,18 +2,19 @@
 
 ## Local testing
 
-The configuration and setup changes in PR #20 are not in v0.3.5. Installing
-`@latest` or pulling the published image does not test this candidate.
+To test unreleased changes, build the checkout. Installing `@latest` or pulling the
+published image tests the latest release instead. Versions through v0.3.5 use the
+old `runner` setting; newer configs use `self_hosted_label`.
 
 With Go and Git installed, start from a checkout:
 
 ```sh
-git clone --branch simplify-routing-config https://github.com/morhaf-ko/zerobill.git
+git clone https://github.com/morhaf-ko/zerobill.git
 cd zerobill
 go run ./cmd/zerobill version
 ```
 
-If you already have this branch checked out, use it directly. Create a separate
+Check out the branch you want to test. If you already have a checkout, use it directly. Create a separate
 config so testing does not alter your existing setup:
 
 ```sh
@@ -96,9 +97,8 @@ The native CLI setup smoke, local container startup and private-repository job
 acceptance are separate gates: a green test suite does not prove a deployed service
 or a real job ran. Record each as passed, failed or unrun.
 
-Before tagging: merge the reviewed exact head, verify main CI, remove the unreleased
-setup notices from the README and service guide, and verify the release's supported
-config format. After tagging: verify release checksums and attestations, and smoke
+Before tagging: merge the reviewed exact head, verify main CI, and verify the
+README and examples describe the release's supported config format. After tagging: verify release checksums and attestations, and smoke
 the published binary and container image. Follow [security](../SECURITY.md) for
 verification commands. A release candidate is not a published release or deployment.
 

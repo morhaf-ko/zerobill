@@ -67,10 +67,9 @@ zerobill version
 ```
 
 `@latest`, [release binaries](https://github.com/morhaf-ko/zerobill/releases/latest)
-and the container image follow published releases. The config rename and setup changes
-in this branch are unreleased until PR #20 is merged and a new release is published.
-To test them now, follow [local testing](docs/testing.md#local-testing); installing
-`@latest` currently installs an older CLI. Run `zerobill version` to check your build.
+and the container image follow published releases. Use matching release versions
+for your CLI and deployed service. Run `zerobill version` to check your build.
+For unreleased changes, follow [local testing](docs/testing.md#local-testing).
 
 Docker is optional. You can try zerobill on your existing computer. Automatic routing
 needs `run --apply` to keep running; installing the CLI does not start it. Move it to
