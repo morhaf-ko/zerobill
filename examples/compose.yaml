@@ -1,18 +1,21 @@
-# Run zerobill with Docker on a machine that stays on. Create
-# ~/.config/zerobill/config.yaml first, then:
-#   GITHUB_TOKEN=$(gh auth token) docker compose up -d
-# or put GITHUB_TOKEN=<fine-grained token> in a .env file next to this one.
-# Follow it with docker compose logs -f zerobill. It only logs until the command
-# is ["run", "--apply"].
+# Published image; test an unreleased candidate with a local image override.
+# See docs/service.md. Settings come from .env beside this file, not the CLI's YAML config.
 services:
   zerobill:
-    image: ghcr.io/morhaf-ko/zerobill:latest   # or pin a release, such as :0.3.3
+    image: ghcr.io/morhaf-ko/zerobill:latest
     restart: unless-stopped
     command: ["run"]
     environment:
-      GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN in .env}
+      ZEROBILL_OWNER: ${ZEROBILL_OWNER:?set ZEROBILL_OWNER in .env}
+      ZEROBILL_SELF_HOSTED_LABEL: ${ZEROBILL_SELF_HOSTED_LABEL:-}
+      ZEROBILL_BLACKSMITH: ${ZEROBILL_BLACKSMITH:-false}
+      ZEROBILL_RESERVE_PERCENT: ${ZEROBILL_RESERVE_PERCENT:-10}
+      ZEROBILL_ALERT_REMAINING_PERCENT: ${ZEROBILL_ALERT_REMAINING_PERCENT:-20}
+      ZEROBILL_CHECK_INTERVAL: ${ZEROBILL_CHECK_INTERVAL:-5m}
+      ZEROBILL_QUEUE_TIMEOUT: ${ZEROBILL_QUEUE_TIMEOUT:-10m}
+      ZEROBILL_NOTIFY: ${ZEROBILL_NOTIFY:-}
     volumes:
-      - ~/.config/zerobill/config.yaml:/etc/zerobill/config.yaml:ro
       - state:/var/lib/zerobill
     read_only: true
     cap_drop: [ALL]

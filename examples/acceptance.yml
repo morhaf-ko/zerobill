@@ -1,0 +1,14 @@
+name: Check runner routing
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 1
+    steps:
+      - name: Confirm a job can execute
+        run: printf 'Runner platform %s/%s\n' "$RUNNER_OS" "$RUNNER_ARCH"

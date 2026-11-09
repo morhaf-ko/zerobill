@@ -37,12 +37,15 @@ owner: your-org
 self_hosted_label: home-ci
 ```
 
-`zerobill status` shows the runner as `online`. Jobs go to it first; when it is off they
-move to your free hosted minutes, and come back when it is on again.
+Run these checks on the machine hosting zerobill. Its GitHub credential needs access
+to the same owner and the runner must be allowed to serve your private repositories.
+No Forge IP address, inbound port or direct connection from zerobill is required:
+both communicate with GitHub. When reads succeed, zerobill prefers usable matching
+runners. GitHub reporting delays and the configured check interval affect detection.
 
 ## Travel
 
-Before switching the machine off for a while, pause it so jobs go straight to the hosted
+On the controller machine, before switching the runner machine off for a while, pause it so jobs go straight to the hosted
 tiers instead of waiting 10 minutes first:
 
 ```sh
@@ -57,15 +60,16 @@ zerobill pause runner 14d
 for each job. zerobill works with them; three settings make it work well:
 
 - **Use the label every pool shares.** If GARM has a forge pool and a laptop pool, both
-  labelled `home-ci` with priorities, set `self_hosted_label: home-ci`. GARM still picks which pool
+  labelled `home-ci` with priorities, set `self_hosted_label: home-ci` only if you want
+  both included. Give optional machines a separate label to exclude them. GARM still picks which pool
   runs the job; zerobill only decides between your pools and the free tiers.
 - **Keep at least one idle runner** (GARM's `min-idle-runners`). zerobill then sees
   your pool as warm: when the machine goes off it waits for one job to stall, moves CI to
-  the free tiers, and comes back the moment an idle runner is online again. Without idle
+  the free tiers, and comes back on the next successful check after an idle runner is online again. Without idle
   runners it cannot tell "off" from "no job yet", so it retries an hour after the stall.
 - **Register the pools where zerobill reads runners:** at organization level when
   `owner` is an organization, on the repositories for a personal account.
 
 When the machine that runs your jobs is off, GARM removes its runners. The first job
-then waits 10 minutes, zerobill moves `CI_RUNNER` to a free tier and reruns that job
+then waits longer than `queue_timeout` (default 10 minutes), zerobill moves `CI_RUNNER` to a free tier and reruns that job
 there, and later jobs go straight to the free tier until the machine is back.

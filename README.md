@@ -31,7 +31,7 @@ The Blacksmith figure is an estimate, not an invoice. Only enable it if you alre
 have access to Blacksmith runners. See the [self-hosted runner guide](docs/homelab.md)
 for your own machine and [security](SECURITY.md) for token permissions.
 
-zerobill does two things. Every 5 minutes it sets the repository variable `CI_RUNNER`
+zerobill does two things. Every 5 minutes by default it sets the repository variable `CI_RUNNER`
 to the best free runner, which your workflows read with
 `runs-on: ${{ vars.CI_RUNNER }}`. And it reruns jobs that were already stuck on your
 runner when it went down, on the new runner.
@@ -59,16 +59,22 @@ Problems:
 
 ## Install
 
-The guided workflow in this README follows `main`. Install it with:
+For a published release, install Go and the [GitHub CLI](https://cli.github.com/), then run:
 
 ```sh
-go install github.com/morhaf-ko/zerobill/cmd/zerobill@main
+go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
 zerobill version
 ```
 
-`@latest` installs the newest tagged release, which can be older than `main`.
-[Release binaries](https://github.com/morhaf-ko/zerobill/releases/latest) and the
-image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
+`@latest`, [release binaries](https://github.com/morhaf-ko/zerobill/releases/latest)
+and the container image follow published releases. The config rename and setup changes
+in this branch are unreleased until PR #20 is merged and a new release is published.
+To test them now, follow [local testing](docs/testing.md#local-testing); installing
+`@latest` currently installs an older CLI. Run `zerobill version` to check your build.
+
+Docker is optional. You can try zerobill on your existing computer. Automatic routing
+needs `run --apply` to keep running; installing the CLI does not start it. Move it to
+an existing always-on machine when ready; you do not need to rent a server.
 
 ## Quick start
 
@@ -79,9 +85,8 @@ image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
    ```
 
    Enter your GitHub user or organization, your runner label if you have one, and
-   whether you use Blacksmith. Init writes your choices and comments out optional defaults. Existing configs stay
-   untouched. It tells
-   you how to sign in with the [GitHub CLI](https://cli.github.com/) if needed:
+   whether you use Blacksmith. Init writes your choices and comments out optional
+   defaults. Existing configs stay untouched. It tells you how to sign in with the [GitHub CLI](https://cli.github.com/) if needed:
 
    ```sh
    gh auth login --hostname github.com
@@ -131,8 +136,10 @@ image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
    ```
 
    `--apply` changes repository variables and can cancel and rerun stalled jobs.
-   For a persistent service, use [Docker](examples/compose.yaml) or the
-   [systemd user service](examples/zerobill.service).
+   Keep this terminal open while testing. To survive logout and reboot, follow
+   [running as a service](docs/service.md): native Linux or Docker, whichever you
+   already use. Configure and authenticate on that machine; your laptop's settings
+   are not automatically copied there.
 
 ## Which GitHub login is used?
 
@@ -222,7 +229,8 @@ does not verify either provider's spending limits or manage storage charges.
 Blacksmith and your own runners still depend on GitHub Actions. Switching compute
 providers cannot bypass an Actions control-plane outage. zerobill currently detects
 self-hosted queue stalls, not hosted-provider outages. Use `zerobill pause github`
-or `zerobill pause blacksmith` to exclude a hosted tier when GitHub's API is working.
+or `zerobill pause blacksmith` on the machine running the controller to exclude a
+hosted tier when GitHub's API is working.
 
 ## Commands
 
@@ -255,5 +263,6 @@ self-hosted runners on them, so zerobill only routes private repositories.
 
 ## More
 
-[Reference](docs/reference.md) · [Self-hosted runner guide](docs/homelab.md) ·
+[Service setup](docs/service.md) · [Reference](docs/reference.md) ·
+[Self-hosted runner guide](docs/homelab.md) · [Testing](docs/testing.md) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [MIT license](LICENSE)

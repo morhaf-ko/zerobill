@@ -142,21 +142,23 @@ Without `--apply`, `run` logs the same decisions as JSON lines and writes nothin
 
 ## Running it as a service
 
-- **Docker:** [`examples/compose.yaml`](../examples/compose.yaml) runs the image
-  read-only, without capabilities, as a non-root user. It reads
-  `/etc/zerobill/config.yaml` and keeps state in a volume. Containers cannot use your
-  GitHub CLI login, so pass `GITHUB_TOKEN`: `GITHUB_TOKEN=$(gh auth token)`, or a
-  fine-grained token in `.env` with only the permissions in [security](../SECURITY.md).
-- **Linux service:** [`examples/zerobill.service`](../examples/zerobill.service) is a
-  systemd user service that uses your GitHub CLI login. Read its decisions with
-  `journalctl --user -u zerobill -f`; on systems without per-user journals, use
-  `sudo journalctl _SYSTEMD_USER_UNIT=zerobill.service -f`.
-- **macOS:** run `zerobill run --apply` from a launchd agent.
+Follow [service setup](service.md) for installation, startup, logs, updates and stop
+commands. Docker is optional. A native service reads that user's YAML config; the
+Compose example uses environment settings and a persistent state volume.
 
-Run it on a different machine than your runner when you can, so a power cut there does
-not stop zerobill as well.
+Commands read the config, credential and state on the machine where they execute.
+A laptop command does not control an instance on your VPS. Run commands there over
+SSH, or use `docker compose exec zerobill zerobill status` and
+`docker compose exec zerobill zerobill pause runner 7d` in its Compose directory.
+`status` performs fresh reads and reports recommendations; it does not prove the
+background controller is running or that a recommendation was applied. Check its
+logs for the latest completed check and writes.
 
-To watch zerobill itself, start it with `run --apply --health :8080`. It then serves
-`/healthz`, which answers `200` while its loop started or finished a check in the last
-`max(15m, 3 × check_interval)` and `503` otherwise. Point an uptime monitor or a Kubernetes probe at it. It reports the
-loop, not GitHub: read failures stay in the log, since restarting would not fix them.
+Immediate refresh and remote-client profiles are not implemented. A pause is read
+on the next check; configuration changes require restarting the controller.
+
+`run --apply --health :8080` optionally serves `/healthz`. It answers `200` while its
+loop started or finished a check in the last `max(15m, 3 × check_interval)` and `503`
+otherwise. It reports zerobill's loop, not Forge's power state or GitHub access. Read
+failures stay in the log; restarting does not repair provider access. Runner health
+is read from GitHub, so no direct Forge URL is required.
