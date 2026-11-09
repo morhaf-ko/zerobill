@@ -165,6 +165,7 @@ type Repo struct {
 type Result struct {
 	Repos         []Repo
 	PrivateRepos  int
+	ExampleRepo   string
 	AccessProblem bool
 	RateLimited   bool
 	// Fixed are runs-on declarations pinned to a literal label, which zerobill
@@ -187,6 +188,9 @@ func Discover(gh *github.Client, owner string, org bool) (Result, error) {
 			continue
 		}
 		r.PrivateRepos++
+		if r.ExampleRepo == "" {
+			r.ExampleRepo = repo.Name
+		}
 		name := repo.Name
 		decls, err := workflows(gh, name)
 		if err != nil {

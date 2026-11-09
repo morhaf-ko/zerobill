@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/morhaf-ko/zerobill/internal/apply"
 	"github.com/morhaf-ko/zerobill/internal/collect"
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/discover"
@@ -176,7 +179,7 @@ func TestStatusChecksAccessBeforeColdScan(t *testing.T) {
 		}))
 		gh := github.New("fixture-token")
 		gh.BaseURL = srv.URL
-		a := &app{cfg: &config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}, col: &collect.Collector{GH: gh, Owner: "acme", Org: true}}
+		a := &app{cfg: &config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}, col: &collect.Collector{GH: gh, Owner: "acme", Org: true}, stateDir: t.TempDir()}
 		a.providers, a.routes = build(a.cfg, 2000)
 		var progress bytes.Buffer
 		r := statusObservations(a, &progress)
@@ -186,6 +189,14 @@ func TestStatusChecksAccessBeforeColdScan(t *testing.T) {
 				t.Fatalf("did not fail promptly: %v %+v %q", paths, r, progress.String())
 			}
 		} else {
+			if err := os.Mkdir(a.pausePath(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			adjust(a, &apply.State{}, now, r.States, r.Errors)
+			if r.Errors["pause"] == "" {
+				t.Fatal("local pause read failure was not reported")
+			}
+			delete(r.Errors, "pause")
 			if len(r.States) != 3 || len(r.Errors) != 0 || len(paths) < 3 || paths[1] != "/orgs/acme/actions/runners" || !strings.Contains(progress.String(), "no Blacksmith API key needed") {
 				t.Fatalf("wrong read order: %v %+v %q", paths, r, progress.String())
 			}
@@ -199,5 +210,34 @@ func TestStatusRateLimitDoesNotRequestMoreScopes(t *testing.T) {
 	err := render(&out, now, a, nil, nil, discover.Result{PrivateRepos: 1, Repos: []discover.Repo{{Name: "acme/app"}}}, collect.Result{Errors: map[string]string{"github": "secondary rate limit"}, RateLimited: true})
 	if !errors.Is(err, errStatusIncomplete) || !strings.Contains(out.String(), "Wait until its rate limit resets") || strings.Contains(out.String(), "gh auth refresh") {
 		t.Fatalf("wrong recovery: %v %s", err, out.String())
+	}
+}
+
+func TestGeneratedSetupCommandsUseSelectedCredential(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '%s' \"${GH_TOKEN-unset}|${GITHUB_TOKEN-unset}\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct{ source, want string }{
+		{"GITHUB_TOKEN", "unset|fixture-github"}, {"GH_TOKEN", "fixture-gh|unset"}, {"GitHub CLI", "unset|unset"},
+	} {
+		var text bytes.Buffer
+		workflowSteps(&text, discover.Result{ExampleRepo: "acme/app"}, tt.source)
+		var command string
+		for _, line := range strings.Split(text.String(), "\n") {
+			if strings.Contains(line, " variable set ") {
+				command = strings.TrimSpace(line)
+				break
+			}
+		}
+		if command == "" {
+			t.Fatal("no prefilled command for a new workflow")
+		}
+		cmd := exec.Command("sh", "-c", command)
+		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "GH_TOKEN=fixture-gh", "GITHUB_TOKEN=fixture-github"}
+		out, err := cmd.Output()
+		if err != nil || string(out) != tt.want {
+			t.Fatalf("source %s used the wrong credential: %v", tt.source, err)
+		}
 	}
 }

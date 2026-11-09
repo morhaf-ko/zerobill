@@ -101,9 +101,8 @@ image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
 3. Connect the private repositories you want to route. Create the variable before
    changing the workflow, so `runs-on` never reads an empty value:
 
-   ```sh
-   gh variable set CI_RUNNER --body ubuntu-latest --repo your-org/your-repo
-   ```
+   Use the repository-specific command printed by status: it preserves the same
+   credential that zerobill checked. Then edit that repository's workflow:
 
    ```yaml
    runs-on: ${{ vars.CI_RUNNER }}

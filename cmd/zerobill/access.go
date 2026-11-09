@@ -31,7 +31,7 @@ func accessSteps(source string, org bool) string {
 		scopes = "repo,admin:org"
 	}
 	help := "Authorize the GitHub CLI to read private repositories, runners and billing:\n" +
-		"  gh auth refresh --hostname github.com --scopes " + scopes + "\n" +
+		"  " + ghCommand(source) + " auth refresh --hostname github.com --scopes " + scopes + "\n" +
 		"Then check again:\n  zerobill status"
 	if org {
 		help += "\nOrganization billing and runner access also require the appropriate organization role."
@@ -45,12 +45,12 @@ func connectionProblem(action, source, owner string, org bool, err error) error 
 	}
 	if github.IsAccessDenied(err) {
 		if se, ok := err.(*github.StatusError); ok && se.Code == 401 && source == "GitHub CLI" {
-			return fmt.Errorf("your GitHub CLI login was rejected. Sign in again:\n  gh auth login --hostname github.com\n  zerobill status\n\nDetails: %w", err)
+			return fmt.Errorf("your GitHub CLI login was rejected. Sign in again:\n  %s auth login --hostname github.com\n  zerobill status\n\nDetails: %w", ghCommand(source), err)
 		}
 		return fmt.Errorf("cannot %s using %s.\n\nNext: %s\n\nDetails: %w", action, source, accessSteps(source, org), err)
 	}
 	if github.IsNotFound(err) {
-		return fmt.Errorf("cannot find owner %s, or this credential cannot see it. Check owner in your config and the account shown by:\n  gh auth status --hostname github.com\n\nDetails: %w", owner, err)
+		return fmt.Errorf("cannot find owner %s, or this credential cannot see it. Check owner in your config and the account shown by:\n  %s auth status --hostname github.com\n\nDetails: %w", owner, ghCommand(source), err)
 	}
 	return fmt.Errorf("could not %s using %s; check the connection and try zerobill status again.\nDetails: %w", action, source, err)
 }
@@ -64,4 +64,16 @@ func billingURL(owner string, org bool) string {
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// gh normally prefers GH_TOKEN, while zerobill preserves GITHUB_TOKEN precedence.
+func ghCommand(source string) string {
+	switch source {
+	case "GITHUB_TOKEN":
+		return "env -u GH_TOKEN gh"
+	case "GH_TOKEN":
+		return "env -u GITHUB_TOKEN gh"
+	default:
+		return "env -u GITHUB_TOKEN -u GH_TOKEN gh"
+	}
 }

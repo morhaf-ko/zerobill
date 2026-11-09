@@ -110,7 +110,7 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 	}
 	if len(problems) > 0 {
 		fmt.Fprintf(w, "\nWorkflow setup:\n  %s\n", strings.Join(problems, "\n  "))
-		workflowSteps(w, found)
+		workflowSteps(w, found, a.authSource)
 	}
 	fmt.Fprintf(w, "\nFREE excludes your %d%% reserve.\n", a.cfg.ReservePercent)
 	if a.cfg.Blacksmith {
@@ -155,11 +155,14 @@ func renderIncomplete(w io.Writer, a *app, found discover.Result, result collect
 		if a.authSource == "GITHUB_TOKEN" || a.authSource == "GH_TOKEN" {
 			fmt.Fprintln(w, accessSteps(a.authSource, a.org))
 		} else {
-			fmt.Fprintf(w, "Check the configured owner and private repository visibility:\n  gh repo list %s --visibility private\n", shellQuote(a.cfg.Owner))
-			fmt.Fprintln(w, "If repositories are missing, check access with:\n  gh auth status --hostname github.com")
+			fmt.Fprintf(w, "Check the configured owner and private repository visibility:\n  %s repo list %s --visibility private\n", ghCommand(a.authSource), shellQuote(a.cfg.Owner))
+			fmt.Fprintf(w, "If repositories are missing, check access with:\n  %s auth status --hostname github.com\n", ghCommand(a.authSource))
 		}
 	case len(found.Errors) > 0:
 		fmt.Fprintln(w, "Check the workflow errors below, then run:\n  zerobill status")
+	case errs["pause"] != "":
+		fmt.Fprintf(w, "Check the local pause state:\n  ls -ld -- %s\n", shellQuote(a.pausePath()))
+		fmt.Fprintln(w, "It must be a readable file, not a directory. Fix it before retrying:\n  zerobill status")
 	case len(errs) > 0:
 		if errs["github"] != "" {
 			if a.authSource == "GITHUB_TOKEN" || a.authSource == "GH_TOKEN" {
@@ -170,7 +173,7 @@ func renderIncomplete(w io.Writer, a *app, found discover.Result, result collect
 		}
 		fmt.Fprintln(w, "Check the API errors below and retry when the service is available:\n  zerobill status")
 	default:
-		workflowSteps(w, found)
+		workflowSteps(w, found, a.authSource)
 	}
 	if len(keys) > 0 || len(found.Errors) > 0 {
 		fmt.Fprintln(w, "\nDetails:")
@@ -184,10 +187,13 @@ func renderIncomplete(w io.Writer, a *app, found discover.Result, result collect
 	return errStatusIncomplete
 }
 
-func workflowSteps(w io.Writer, found discover.Result) {
+func workflowSteps(w io.Writer, found discover.Result, source string) {
+	repo := found.ExampleRepo
 	if len(found.Fixed) > 0 {
-		repo := strings.Fields(found.Fixed[0])[0]
-		fmt.Fprintf(w, "For example, to route %s, first create the variable:\n  gh variable set CI_RUNNER --repo %s --body ubuntu-latest\n", repo, shellQuote(repo))
+		repo = strings.Fields(found.Fixed[0])[0]
+	}
+	if repo != "" {
+		fmt.Fprintf(w, "For example, to route %s, first create the variable:\n  %s variable set CI_RUNNER --repo %s --body ubuntu-latest\n", repo, ghCommand(source), shellQuote(repo))
 	} else {
 		fmt.Fprintln(w, "In each private repository you want to route, create CI_RUNNER with an initial value of ubuntu-latest.")
 	}
@@ -196,7 +202,7 @@ func workflowSteps(w io.Writer, found discover.Result) {
 
 // Check inexpensive reads before starting the cold monthly job scan.
 func statusObservations(a *app, progress io.Writer) collect.Result {
-	r := collect.Result{States: map[string]policy.State{}}
+	r := collect.Result{States: map[string]policy.State{}, Errors: map[string]string{}}
 	for _, name := range []string{"github", "runner", "blacksmith"} {
 		for _, p := range a.providers {
 			if p.Name != name {
