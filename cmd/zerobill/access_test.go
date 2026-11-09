@@ -92,7 +92,7 @@ func TestIncompleteStatus(t *testing.T) {
 	}{
 		{"denied", discover.Result{PrivateRepos: 1, Repos: []discover.Repo{{Name: "acme/app"}}}, map[string]string{"runner": "403 Forbidden"}, true, "env -u GITHUB_TOKEN -u GH_TOKEN zerobill status"},
 		{"no visibility", discover.Result{}, nil, false, "none visible"},
-		{"workflow setup", discover.Result{PrivateRepos: 1, Fixed: []string{"acme/app .github/workflows/ci.yml:3: ubuntu-latest"}}, nil, false, "gh variable set CI_RUNNER --repo 'acme/app' --body ubuntu-latest"},
+		{"workflow setup", discover.Result{PrivateRepos: 1, Fixed: []string{"acme/app .github/workflows/ci.yml:3: ubuntu-latest"}}, nil, false, "gh variable set CI_RUNNER --repo 'acme/app' --body zerobill-wait"},
 		{"partial workflows", discover.Result{PrivateRepos: 1, Errors: []string{"acme/app: invalid workflow"}}, nil, false, "some could not be read"},
 		{"billing unavailable", discover.Result{PrivateRepos: 1, Repos: []discover.Repo{{Name: "acme/app"}}}, map[string]string{"github": "404 Not Found"}, false, "https://github.com/organizations/acme/settings/billing/usage"},
 	} {
@@ -180,7 +180,7 @@ func TestStatusChecksAccessBeforeColdScan(t *testing.T) {
 		}))
 		gh := github.New("fixture-token")
 		gh.BaseURL = srv.URL
-		a := &app{cfg: &config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true}, col: &collect.Collector{GH: gh, Owner: "acme", Org: true}, stateDir: t.TempDir()}
+		a := &app{cfg: &config.Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}, col: &collect.Collector{GH: gh, Owner: "acme", Org: true}, stateDir: t.TempDir()}
 		a.providers, a.routes = build(a.cfg, 2000)
 		var progress bytes.Buffer
 		r := statusObservations(a, &progress)

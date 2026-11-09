@@ -1,5 +1,24 @@
-# ~/.config/zerobill/config.yaml
-owner: your-org      # your GitHub user or organization
-runner: home-ci      # optional: the label of your self-hosted runner
-blacksmith: true     # optional: also use Blacksmith's free minutes
-notify: https://ntfy.sh/your-topic   # optional: a message when zerobill changes runner
+owner: your-org
+
+# Optional self-hosted GitHub Actions label. Find it in Settings > Actions > Runners.
+# Only include machines you want used automatically. Omit without your own runners.
+# self_hosted_label: home-ci
+
+# Enable only after installing the Blacksmith GitHub App.
+# blacksmith: false
+
+# Stop selecting a hosted tier with this percentage of its full allowance left.
+# reserve_percent: 10
+
+# Warn at this percentage of the full allowance remaining. Zero disables warnings.
+# Choose a value above reserve_percent for advance notice.
+# alert_remaining_percent: 20
+
+# Check runner availability and usage this often. Shorter intervals use more GitHub API requests.
+# check_interval: 5m0s
+
+# Treat self-hosted capacity as unavailable after a job waits this long.
+# queue_timeout: 10m0s
+
+# Optional routing-change and low-capacity alerts: ntfy, Discord or Slack webhook.
+# notify: https://ntfy.sh/your-topic

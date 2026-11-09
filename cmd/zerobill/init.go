@@ -41,14 +41,14 @@ func initConfig(args []string, in io.Reader, out io.Writer) error {
 		}
 		return strings.TrimSpace(scan.Text()), nil
 	}
-	c := config.Config{ReservePercent: config.DefaultReservePercent}
+	c := config.Defaults()
 	for c.Owner == "" {
 		c.Owner, err = ask("GitHub owner or organization: ")
 		if err != nil {
 			return err
 		}
 	}
-	c.Runner, err = ask("Self-hosted runner label (optional; leave blank without your own runner): ")
+	c.SelfHostedLabel, err = ask("Optional self-hosted runners: use the label shown in GitHub > Settings > Actions > Runners.\nOnly include machines you want used automatically, such as your server.\nSelf-hosted label (leave blank for GitHub/Blacksmith only): ")
 	if err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func initConfig(args []string, in io.Reader, out io.Writer) error {
 	if err := config.Create(path, c); err != nil {
 		return fmt.Errorf("create config: %w", err)
 	}
-	fmt.Fprintf(out, "\nCreated %s\n", path)
+	fmt.Fprintf(out, "\nCreated %s\nOptional defaults are commented out; uncomment a setting to change it.\n", path)
 	if source := credentialSource(); source != "GitHub CLI" {
 		fmt.Fprintf(out, "GitHub credential: %s (overrides the stored GitHub CLI login).\n", source)
 	} else {

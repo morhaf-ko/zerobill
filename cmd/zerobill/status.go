@@ -12,6 +12,7 @@ import (
 
 	"github.com/morhaf-ko/zerobill/internal/apply"
 	"github.com/morhaf-ko/zerobill/internal/collect"
+	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/discover"
 	"github.com/morhaf-ko/zerobill/internal/policy"
 )
@@ -95,13 +96,27 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "VARIABLE\tUSE\tWHY")
 	for _, rt := range a.routes {
+		used := false
+		for _, repo := range found.Repos {
+			used = used || reads(repo, rt.Variable)
+		}
+		if rt.Variable == "BOT_RUNNER" && !used {
+			continue
+		}
 		d, _ := policy.Hold(policy.Decide(rt, states), applied[rt.Variable], rt, states, now)
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", rt.Variable, d.Label, d.Reason)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "\nRepositories: %d read CI_RUNNER or BOT_RUNNER.\n", len(found.Repos))
+	variables := "CI_RUNNER"
+	for _, repo := range found.Repos {
+		if reads(repo, "BOT_RUNNER") {
+			variables = "CI_RUNNER or BOT_RUNNER"
+			break
+		}
+	}
+	fmt.Fprintf(w, "\nRepositories: %d read %s.\n", len(found.Repos), variables)
 
 	var problems []string
 	for i, f := range found.Fixed {
@@ -119,6 +134,29 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 	if a.cfg.Blacksmith {
 		fmt.Fprintln(w, "Blacksmith usage is estimated from GitHub Actions job history; no Blacksmith API key is used.")
 	}
+	checkInterval := a.cfg.CheckInterval
+	if checkInterval == 0 {
+		checkInterval = config.DefaultCheckInterval
+	}
+	queueTimeout := a.cfg.QueueTimeout
+	if queueTimeout == 0 {
+		queueTimeout = config.DefaultQueueTimeout
+	}
+	fmt.Fprintf(w, "Checks: every %s; self-hosted queue timeout: %s.\n", checkInterval, queueTimeout)
+	for _, alert := range (&controller{a: a}).capacityAlerts(now, states) {
+		fmt.Fprintln(w, alert.Message)
+	}
+	if a.cfg.Notify == "" {
+		fmt.Fprintln(w, "Alerts: not configured; set notify in your config to receive routing and low-capacity alerts.")
+	} else if a.cfg.AlertRemainingPercent == 0 {
+		fmt.Fprintln(w, "Low-capacity alerts: disabled (alert_remaining_percent: 0).")
+	} else {
+		fmt.Fprintf(w, "Low-capacity alerts: %d%% remaining, once per provider per UTC month during run --apply.\n", a.cfg.AlertRemainingPercent)
+	}
+	if a.cfg.AlertRemainingPercent > 0 && a.cfg.AlertRemainingPercent <= a.cfg.ReservePercent {
+		fmt.Fprintln(w, "For advance warning, set alert_remaining_percent above reserve_percent.")
+	}
+	fmt.Fprintln(w, "Spending protection: provider limits are not verified. Configure billing limits separately; routing cannot guarantee zero charges.")
 	fmt.Fprintln(w, "\nNext: preview decisions without changing GitHub:\n  zerobill run\nAfter reviewing those decisions, enable routing with:\n  zerobill run --apply")
 	return nil
 }
@@ -196,11 +234,11 @@ func workflowSteps(w io.Writer, found discover.Result, source string) {
 		repo = strings.Fields(found.Fixed[0])[0]
 	}
 	if repo != "" {
-		fmt.Fprintf(w, "For example, to route %s, first create the variable:\n  %s variable set CI_RUNNER --repo %s --body ubuntu-latest\n", repo, ghCommand(source), shellQuote(repo))
+		fmt.Fprintf(w, "For example, to route %s, first create the variable:\n  %s variable set CI_RUNNER --repo %s --body zerobill-wait\n", repo, ghCommand(source), shellQuote(repo))
 	} else {
-		fmt.Fprintln(w, "In each private repository you want to route, create CI_RUNNER with an initial value of ubuntu-latest.")
+		fmt.Fprintln(w, "In each private repository you want to route, create CI_RUNNER with an initial value of zerobill-wait.")
 	}
-	fmt.Fprintln(w, "Then set the workflow's runner to:\n  runs-on: ${{ vars.CI_RUNNER }}\nCheck again:\n  zerobill status")
+	fmt.Fprintln(w, "Then set the workflow's runner to:\n  runs-on: ${{ vars.CI_RUNNER }}\nCheck again:\n  zerobill status\nzerobill-wait queues jobs without selecting paid capacity; never assign it to a runner.\nAfter run --apply selects capacity, cancel and rerun jobs already queued on zerobill-wait.")
 }
 
 // Check inexpensive reads before starting the cold monthly job scan.

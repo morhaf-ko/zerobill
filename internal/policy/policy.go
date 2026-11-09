@@ -37,6 +37,7 @@ type Provider struct {
 	// Monthly is a metered provider's free minutes a month.
 	Monthly        float64
 	ReservePercent int
+	QueueTimeout   time.Duration
 }
 
 // Limit is the metered minutes usable before the reserve.
@@ -67,6 +68,10 @@ type Decision struct {
 
 // Usable reports whether p can take jobs in state s and why.
 func Usable(p Provider, s State) (bool, string) {
+	queueTimeout := p.QueueTimeout
+	if queueTimeout == 0 {
+		queueTimeout = MaxQueueWait
+	}
 	switch {
 	case s.Paused != "":
 		return false, s.Paused
@@ -76,7 +81,7 @@ func Usable(p Provider, s State) (bool, string) {
 			return false, "free minutes at reserve"
 		}
 		return true, fmt.Sprintf("%.0f free minutes left", left)
-	case s.OldestQueued > MaxQueueWait:
+	case s.OldestQueued > queueTimeout:
 		return false, fmt.Sprintf("a job waited %s", s.OldestQueued.Round(time.Second))
 	case s.Online:
 		return true, "online"
@@ -149,7 +154,7 @@ func fallbackReason(p Provider) string {
 	if p.Kind == SelfHosted {
 		return "no free capacity, jobs wait for your runner"
 	}
-	return "no free capacity, GitHub-hosted jobs may be blocked or billed"
+	return "no free capacity, jobs queue on zerobill-wait; never assign this label to a runner"
 }
 
 func reason(chosen string, skipped []string) string {
@@ -173,7 +178,16 @@ func Hold(d Decision, applied Applied, rt Route, states map[string]State, now ti
 	if applied.Label == "" || applied.Label == d.Label || now.Sub(applied.Since) >= MinHold {
 		return d, false
 	}
-	for _, p := range append(append([]Provider(nil), rt.Providers...), rt.Fallback) {
+	for _, p := range rt.Providers {
+		if p.Name == d.Provider && p.Kind == SelfHosted {
+			if s, ok := states[p.Name]; ok {
+				if usable, _ := Usable(p, s); usable {
+					return d, false
+				}
+			}
+		}
+	}
+	for _, p := range rt.Providers {
 		if p.Name != applied.Provider || p.Label != applied.Label {
 			continue
 		}

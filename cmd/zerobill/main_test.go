@@ -25,10 +25,10 @@ var now = time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 
 func TestBuild(t *testing.T) {
 	providers, routes := build(&config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme"}, 2000)
-	if len(providers) != 1 || routes[0].Fallback.Name != "github" || len(routes[1].Providers) != 1 {
+	if len(providers) != 1 || routes[0].Fallback.Name != "waiting" || len(routes[1].Providers) != 1 {
 		t.Fatalf("GitHub only: %+v %+v", providers, routes)
 	}
-	providers, routes = build(&config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", Runner: "home-ci", Blacksmith: true}, 3000)
+	providers, routes = build(&config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}, 3000)
 	var names []string
 	for _, p := range routes[0].Providers {
 		names = append(names, p.Name)
@@ -41,7 +41,7 @@ func TestBuild(t *testing.T) {
 
 func TestConfiguredReserveRoutesAndHolds(t *testing.T) {
 	for _, reserve := range []int{0, 25, 99} {
-		_, routes := build(&config.Config{Owner: "acme", Runner: "home-ci", Blacksmith: true, ReservePercent: reserve}, 2000)
+		_, routes := build(&config.Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, ReservePercent: reserve}, 2000)
 		for _, rt := range routes {
 			states := map[string]policy.State{"runner": {Registered: true}}
 			for _, p := range rt.Providers {
@@ -109,7 +109,7 @@ func newTestController(t *testing.T, write bool) (*controller, *variables) {
 	t.Cleanup(srv.Close)
 	gh := github.New("t")
 	gh.BaseURL = srv.URL
-	a := &app{cfg: &config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", Runner: "home-ci", Blacksmith: true}, gh: gh, stateDir: t.TempDir()}
+	a := &app{cfg: &config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}, gh: gh, stateDir: t.TempDir()}
 	a.providers, a.routes = build(a.cfg, 2000)
 	c, err := newController(a, write)
 	if err != nil {
@@ -302,7 +302,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestRender(t *testing.T) {
-	a := &app{cfg: &config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", Runner: "home-ci", Blacksmith: true}}
+	a := &app{cfg: &config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}}
 	a.providers, a.routes = build(a.cfg, 2000)
 	states := map[string]policy.State{"runner": {Online: true}, "blacksmith": {UsedMinutes: 1200}, "github": {UsedMinutes: 200}}
 	found := discover.Result{Repos: []discover.Repo{{Name: "acme/app"}}, Fixed: []string{"acme/app .github/workflows/ci.yml:5: ubuntu-latest"}}
@@ -311,9 +311,145 @@ func TestRender(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 6 of 30 days gone: Blacksmith's 1200 minutes project to 6000, past its 2700 on 14 Nov.
-	for _, want := range []string{"20% of the month", "6000 min, runs out 14 Nov", "1500 min", "CI_RUNNER   home-ci", "fixed runner, change to ${{ vars.CI_RUNNER }}: acme/app"} {
+	if strings.Contains(out.String(), "\nBOT_RUNNER") {
+		t.Fatalf("unused bot route shown: %s", out.String())
+	}
+	for _, want := range []string{"20% of the month", "6000 min, runs out 14 Nov", "1500 min", "CI_RUNNER  home-ci", "fixed runner, change to ${{ vars.CI_RUNNER }}: acme/app"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q in:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestCapacityAlertsPersistAndReset(t *testing.T) {
+	var messages []string
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "monthly free allowance") {
+			messages = append(messages, string(body))
+		}
+	}))
+	defer hook.Close()
+	c, _ := newTestController(t, true)
+	c.a.cfg.Notify, c.a.cfg.AlertRemainingPercent = hook.URL, 20
+	r := result(policy.State{Registered: true})
+	r.States["github"] = policy.State{UsedMinutes: 1600}
+	r.States["blacksmith"] = policy.State{UsedMinutes: 2400}
+	l := step(t, c, 0, r)
+	if len(messages) != 2 || len(l.Alerts) != 2 || l.Errors != nil {
+		t.Fatalf("initial: %q %+v", messages, l)
+	}
+	restarted, err := newController(c.a, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.repos = c.repos
+	step(t, restarted, time.Minute, r)
+	if len(messages) != 2 {
+		t.Fatalf("restart duplicated alerts: %q", messages)
+	}
+	// Owner changes and the next UTC month must not inherit another allowance's warning.
+	restarted.a.cfg.Owner = "other"
+	step(t, restarted, 2*time.Minute, r)
+	if len(messages) != 4 {
+		t.Fatalf("owner reset: %q", messages)
+	}
+	step(t, restarted, 32*24*time.Hour, r)
+	if len(messages) != 6 {
+		t.Fatalf("month reset: %q", messages)
+	}
+}
+
+func TestCapacityAlertsRetryAndReadFailures(t *testing.T) {
+	sends := 0
+	fail := true
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "monthly free allowance") {
+			sends++
+			if fail {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+		}
+	}))
+	defer hook.Close()
+	c, _ := newTestController(t, true)
+	c.a.cfg.Notify, c.a.cfg.AlertRemainingPercent = hook.URL, 5
+	r := result(policy.State{Registered: true})
+	r.States["github"] = policy.State{UsedMinutes: 1900}
+	l := step(t, c, 0, r)
+	if sends != 1 || l.Errors["notify capacity github"] == "" || c.state.Alerts["github"] {
+		t.Fatalf("failed send: %d %+v", sends, l)
+	}
+	fail = false
+	l = step(t, c, time.Minute, r)
+	if sends != 2 || !c.state.Alerts["github"] || l.Errors != nil {
+		t.Fatalf("retry: %d %+v", sends, l)
+	}
+	c.state.Alerts = map[string]bool{}
+	r.Errors = map[string]string{"blacksmith": "unavailable"}
+	l = step(t, c, 2*time.Minute, r)
+	if sends != 2 || len(l.Alerts) != 0 {
+		t.Fatalf("read failure sent warning: %d %+v", sends, l)
+	}
+	c.apply = false
+	r.Errors = nil
+	l = step(t, c, 3*time.Minute, r)
+	if sends != 2 || len(l.Alerts) != 1 {
+		t.Fatalf("preview sent capacity warning: %d %+v", sends, l)
+	}
+	c.a.cfg.AlertRemainingPercent = 0
+	l = step(t, c, 4*time.Minute, r)
+	if len(l.Alerts) != 0 {
+		t.Fatalf("disabled warnings: %+v", l)
+	}
+}
+
+func TestHostedOnlyExhaustionWaits(t *testing.T) {
+	c, vars := newTestController(t, true)
+	c.a.cfg.SelfHostedLabel = ""
+	c.a.providers, c.a.routes = build(c.a.cfg, 2000)
+	r := collect.Result{States: map[string]policy.State{"github": {UsedMinutes: 1800}, "blacksmith": {UsedMinutes: 2700}}}
+	l := step(t, c, 0, r)
+	if l.Errors != nil {
+		t.Fatal(l.Errors)
+	}
+	for key, value := range vars.values {
+		if value != config.WaitingLabel {
+			t.Fatalf("%s selected paid capacity %s", key, value)
+		}
+	}
+}
+
+func TestConfiguredQueueTimeoutLatchesAndRecovers(t *testing.T) {
+	c, _ := newTestController(t, false)
+	c.a.cfg.QueueTimeout = 2 * time.Minute
+	c.a.cfg.CheckInterval = time.Minute
+	c.a.providers, c.a.routes = build(c.a.cfg, 2000)
+	stall := policy.State{OldestQueued: 3 * time.Minute}
+	if l := step(t, c, 0, result(stall)); l.Routes[0].Provider != "blacksmith" {
+		t.Fatalf("stall not detected: %+v", l)
+	}
+	if l := step(t, c, time.Minute, result(policy.State{})); l.Routes[0].Provider != "blacksmith" {
+		t.Fatalf("stall not remembered: %+v", l)
+	}
+	if l := step(t, c, 2*time.Minute, result(policy.State{Online: true})); l.Routes[0].Provider != "runner" || l.Routes[0].Held {
+		t.Fatalf("recovery held: %+v", l)
+	}
+}
+
+func TestHealthUsesConfiguredInterval(t *testing.T) {
+	h := &heartbeat{staleAfter: 3 * time.Hour}
+	h.mark(time.Now().Add(-time.Hour))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hourly loop considered stale: %d", rec.Code)
+	}
+	h.mark(time.Now().Add(-4 * time.Hour))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("stalled loop considered healthy: %d", rec.Code)
 	}
 }
