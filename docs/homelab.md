@@ -34,7 +34,7 @@ Keep it safe:
 
 ```yaml
 owner: your-org
-runner: home-ci
+self_hosted_label: home-ci
 ```
 
 `zerobill status` shows the runner as `online`. Jobs go to it first; when it is off they
@@ -57,7 +57,7 @@ zerobill pause runner 14d
 for each job. zerobill works with them; three settings make it work well:
 
 - **Use the label every pool shares.** If GARM has a forge pool and a laptop pool, both
-  labelled `home-ci` with priorities, set `runner: home-ci`. GARM still picks which pool
+  labelled `home-ci` with priorities, set `self_hosted_label: home-ci`. GARM still picks which pool
   runs the job; zerobill only decides between your pools and the free tiers.
 - **Keep at least one idle runner** (GARM's `min-idle-runners`). zerobill then sees
   your pool as warm: when the machine goes off it waits for one job to stall, moves CI to

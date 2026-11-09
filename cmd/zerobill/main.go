@@ -36,15 +36,16 @@ usage:
   zerobill init                         create a config with guided prompts
   zerobill [status]                     free minutes, current choices and problems
   zerobill run [--apply] [--health :8080]
-                                        keep CI_RUNNER and BOT_RUNNER on the best free
-                                        runner, every 5 minutes; without --apply it
+                                        keep CI_RUNNER on available free capacity;
+                                        without --apply it
                                         only logs; --health serves /healthz
   zerobill pause runner|blacksmith|github [duration]
   zerobill resume runner|blacksmith|github
   zerobill version
 
-Config: ~/.config/zerobill/config.yaml with owner, and optionally runner, blacksmith,
-reserve_percent (default 10) and notify; or the matching ZEROBILL_* environment variables.
+Config: ~/.config/zerobill/config.yaml; run zerobill init for commented options.
+Optional: self_hosted_label, blacksmith, reserve_percent, alert_remaining_percent,
+check_interval, queue_timeout and notify; or matching ZEROBILL_* environment variables.
 GitHub access: GITHUB_TOKEN, else the GitHub CLI login (gh auth token).`
 
 func main() {
@@ -199,10 +200,7 @@ const (
 	blacksmithFree  = 3000
 )
 
-// build turns the config into providers and the two routes: CI_RUNNER tries the
-// user's runner and then the free tiers; BOT_RUNNER only the free tiers. Both
-// fall back to the runner when one is configured, so jobs wait instead of
-// costing money.
+// BOT_RUNNER is optional hosted-first routing. Exhausted tiers never fall back to paid capacity.
 func build(cfg *config.Config, githubMinutes float64) ([]policy.Provider, []policy.Route) {
 	var hosted []policy.Provider
 	if cfg.Blacksmith {
@@ -210,9 +208,9 @@ func build(cfg *config.Config, githubMinutes float64) ([]policy.Provider, []poli
 	}
 	github := policy.Provider{Name: "github", Label: githubLabel, Kind: policy.Metered, Monthly: githubMinutes, ReservePercent: cfg.ReservePercent}
 	hosted = append(hosted, github)
-	ci, fallback := hosted, github
-	if cfg.Runner != "" {
-		runner := policy.Provider{Name: "runner", Label: cfg.Runner, Kind: policy.SelfHosted}
+	ci, fallback := hosted, policy.Provider{Name: "waiting", Label: config.WaitingLabel}
+	if cfg.SelfHostedLabel != "" {
+		runner := policy.Provider{Name: "runner", Label: cfg.SelfHostedLabel, Kind: policy.SelfHosted, QueueTimeout: cfg.QueueTimeout}
 		ci, fallback = append([]policy.Provider{runner}, hosted...), runner
 	}
 	return ci, []policy.Route{
@@ -245,7 +243,7 @@ func providerArg(a *app, args []string) (string, error) {
 			return p.Name, nil
 		}
 	}
-	return "", fmt.Errorf("%s is not configured; providers are runner (with runner: set), blacksmith (with blacksmith: true) and github", args[0])
+	return "", fmt.Errorf("%s is not configured; providers are runner (with self_hosted_label: set), blacksmith (with blacksmith: true) and github", args[0])
 }
 
 func pause(args []string, now time.Time) error {

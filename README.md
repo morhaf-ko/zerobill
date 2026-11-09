@@ -50,9 +50,8 @@ github      ubuntu-latest                 850 free minutes left   950 min   850 
 
 VARIABLE    USE                           WHY
 CI_RUNNER   blacksmith-2vcpu-ubuntu-2404  least used free tier: blacksmith 42%, github 53% (skipped runner: offline)
-BOT_RUNNER  blacksmith-2vcpu-ubuntu-2404  least used free tier: blacksmith 42%, github 53%
 
-Repositories: 7 read CI_RUNNER or BOT_RUNNER.
+Repositories: 7 read CI_RUNNER.
 
 Problems:
   fixed runner, change to ${{ vars.CI_RUNNER }}: your-org/api .github/workflows/release.yml:12: ubuntu-latest
@@ -80,7 +79,8 @@ image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
    ```
 
    Enter your GitHub user or organization, your runner label if you have one, and
-   whether you use Blacksmith. Init leaves existing configs untouched and tells
+   whether you use Blacksmith. Init writes your choices and comments out optional defaults. Existing configs stay
+   untouched. It tells
    you how to sign in with the [GitHub CLI](https://cli.github.com/) if needed:
 
    ```sh
@@ -105,7 +105,10 @@ image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
 3. Connect the private repositories you want to route. Create the variable before
    changing the workflow, so `runs-on` never reads an empty value:
 
-   Use the repository-specific command printed by status: it preserves the same
+   Use the repository-specific command printed by status. It initializes `CI_RUNNER`
+   to `zerobill-wait`, so new jobs queue without selecting paid capacity. Never assign
+   that label to a runner. After enabling routing, cancel and rerun any jobs already
+   queued on that label. The command preserves the same
    credential that zerobill checked. Then edit that repository's workflow:
 
    ```yaml
@@ -121,7 +124,7 @@ image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
    zerobill run
    ```
 
-   This logs decisions every 5 minutes. After reviewing them, enable routing:
+   This logs decisions every 5 minutes by default. After reviewing them, enable routing:
 
    ```sh
    zerobill run --apply
@@ -145,20 +148,81 @@ Status suggests `gh auth refresh` when GitHub denies required reads. Extra scope
 cannot grant an organization role or make an unavailable billing API available.
 For containers, supply a token with the [required permissions](SECURITY.md).
 
-## Options
+## Config and defaults
 
-| | Add to the config | Then |
-| --- | --- | --- |
-| **Your own runner** | `runner: home-ci` | Install GitHub's runner with that label; see the [self-hosted runner guide](docs/homelab.md). zerobill uses it first and moves jobs away once it stops. |
-| **Blacksmith** | `blacksmith: true` | Install the [Blacksmith](https://www.blacksmith.sh/) GitHub app. Its 3,000 free minutes are shared with GitHub's so both last the month. |
-| **Notifications** | `notify: https://ntfy.sh/your-topic` | Get a message whenever zerobill changes runner. Discord and Slack webhook URLs work too. |
-| **Reserve** | `reserve_percent: 10` | Keep this percentage of each free tier in reserve. Default: 10; accepts integers from 0 to 99. Zero uses the full allowance. |
-
-Keep dependency bots on the hosted tiers, so your machine stays free for you:
+Only `owner` is required. `zerobill init` creates a config with commented options;
+uncomment a value to override its default. See [the example](examples/config.yaml).
 
 ```yaml
-runs-on: ${{ github.actor == 'renovate[bot]' && vars.BOT_RUNNER || vars.CI_RUNNER }}
+owner: your-org
+
+# Optional: the GitHub Actions label assigned to your own runners.
+# self_hosted_label: home-ci
+
+# Enable after installing the Blacksmith GitHub App.
+# blacksmith: false
+
+# reserve_percent: 10
+# alert_remaining_percent: 20
+# check_interval: 5m
+# queue_timeout: 10m
+# notify: https://ntfy.sh/your-topic
 ```
+
+Find your self-hosted label under **GitHub → Settings → Actions → Runners**. Use a
+label shared only by machines you want zerobill to select. A laptop with a different
+label stays out. Without `self_hosted_label`, zerobill still shares work between
+GitHub and Blacksmith when enabled. Upgrading an existing config: rename `runner`
+to `self_hosted_label`; for containers, rename `ZEROBILL_RUNNER` to
+`ZEROBILL_SELF_HOSTED_LABEL`. Old names produce a migration error.
+
+## How routing works
+
+All jobs, including bots, can use `runs-on: ${{ vars.CI_RUNNER }}`:
+
+1. Prefer usable self-hosted runners, returning on the next successful check.
+2. Otherwise choose the hosted tier with the lowest percentage of its usable
+   allowance consumed. With a 10% reserve, 2,000 GitHub minutes provide 1,800 usable
+   minutes and 3,000 Blacksmith minutes provide 2,700. This is proportional sharing,
+   rather than exhausting one provider first.
+3. At the reserve, stop selecting that tier. When neither tier has capacity, jobs
+   wait for your self-hosted runner, or queue on `zerobill-wait` without one. GitHub
+   eventually cancels jobs that cannot find a runner; this is not indefinite storage.
+
+`check_interval` controls availability and usage checks, default 5 minutes.
+`queue_timeout` controls how long an on-demand self-hosted job may wait before its
+pool is considered unavailable, default 10 minutes. Both accept durations from `1m`
+to `1h`; shorter checks use more GitHub API requests. API processing adds time.
+The 15-minute hold only reduces switching between usable hosted tiers; it never
+holds an exhausted tier or delays returning to usable self-hosted capacity.
+
+For an optional hosted-first bot policy, see [the reference](docs/reference.md#routing).
+
+## Alerts and spending protection
+
+Set `notify` to an ntfy topic, Discord webhook or Slack webhook. During
+`run --apply`, zerobill sends a low-capacity warning once per provider per UTC month,
+including after a restart. By default it warns at 20% of the full allowance remaining,
+ahead of the 10% reserve, so you have time to turn on your own runners. Routing
+changes also send messages. `status` and preview logs show low-capacity warnings
+without sending those warnings.
+
+Change `alert_remaining_percent` to 10 or 5 if desired, or 0 to disable it. Choose a
+threshold above `reserve_percent` for advance notice; otherwise routing can stop
+using a provider before usage reaches the warning threshold.
+
+zerobill reduces paid overflow risk; it cannot guarantee zero charges. Usage can lag,
+jobs already running keep running, fixed-label workflows bypass routing, and an
+API failure or stopped service leaves the last variable value in place. Configure
+provider spending limits as the financial backstop. On GitHub, use a budget with
+[Stop usage when budget limit is reached](https://docs.github.com/en/billing/how-tos/set-up-budgets),
+not an alert-only budget. Configure Blacksmith billing controls separately; zerobill
+does not verify either provider's spending limits or manage storage charges.
+
+Blacksmith and your own runners still depend on GitHub Actions. Switching compute
+providers cannot bypass an Actions control-plane outage. zerobill currently detects
+self-hosted queue stalls, not hosted-provider outages. Use `zerobill pause github`
+or `zerobill pause blacksmith` to exclude a hosted tier when GitHub's API is working.
 
 ## Commands
 
@@ -166,7 +230,7 @@ runs-on: ${{ github.actor == 'renovate[bot]' && vars.BOT_RUNNER || vars.CI_RUNNE
 | --- | --- |
 | `zerobill init` | Create a config with guided prompts; never overwrites an existing file |
 | `zerobill status` | Free minutes, month-end projection, current choice and problems |
-| `zerobill run [--apply]` | Keep `CI_RUNNER` and `BOT_RUNNER` on the best free runner |
+| `zerobill run [--apply]` | Keep connected workflows on available free capacity |
 | `zerobill pause runner 7d` | Take a runner out, for example while you travel; `zerobill resume runner` brings it back. With Docker: `docker compose exec zerobill zerobill pause runner 7d` |
 
 ## FAQ
@@ -179,11 +243,8 @@ stuck on a runner that is down. Nothing else.
 `zerobill status` identifies the credential and gives commands for missing access.
 Organization roles and fine-grained token permissions are listed in [security](SECURITY.md).
 
-**Can it cost me money?** By default it keeps 10% of every free tier in reserve;
-change that with `reserve_percent`. This buffer helps cover running jobs and delayed
-usage reporting; it cannot guarantee zero charges. When every free tier is used, jobs wait for your runner. Without
-a runner they stay on GitHub-hosted, which GitHub Free blocks at the allowance and paid
-plans bill.
+**Can it cost me money?** Yes. The reserve and waiting behavior help conserve free
+capacity; provider spending limits are still required. See [spending protection](#alerts-and-spending-protection).
 
 **Why not a scheduled workflow?** A workflow every 5 minutes on a private repository
 would itself use at least 8,640 minutes a month.

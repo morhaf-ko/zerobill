@@ -14,6 +14,7 @@ import (
 
 	"github.com/morhaf-ko/zerobill/internal/apply"
 	"github.com/morhaf-ko/zerobill/internal/collect"
+	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/discover"
 	"github.com/morhaf-ko/zerobill/internal/notify"
 	pauses "github.com/morhaf-ko/zerobill/internal/pause"
@@ -21,7 +22,6 @@ import (
 )
 
 const (
-	interval = 5 * time.Minute
 	// rediscover is how often run rescans workflows; every interval would spend
 	// the API rate limit on large organizations.
 	rediscover = time.Hour
@@ -51,7 +51,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	beat := &heartbeat{}
+	beat := &heartbeat{staleAfter: max(3*a.cfg.CheckInterval, staleAfter)}
 	beat.mark(time.Now())
 	if healthAddr != "" {
 		// Bind before the first check, so a bad address fails before anything is written.
@@ -65,7 +65,7 @@ func run(args []string) error {
 			fmt.Fprintln(os.Stderr, "zerobill: health:", srv.Serve(ln))
 		}()
 	}
-	tick := time.NewTicker(interval)
+	tick := time.NewTicker(a.cfg.CheckInterval)
 	defer tick.Stop()
 	var foundAt time.Time
 	for {
@@ -90,10 +90,13 @@ func run(args []string) error {
 // heartbeat answers /healthz with whether the loop finished a check recently.
 // It reports the loop, not GitHub: a GitHub outage is logged, and restarting
 // zerobill would not fix it.
-type heartbeat struct{ last atomic.Int64 }
+type heartbeat struct {
+	last       atomic.Int64
+	staleAfter time.Duration
+}
 
 // staleAfter allows a slow first check, such as a cold month of Blacksmith jobs.
-const staleAfter = 3 * interval
+const staleAfter = 3 * config.DefaultCheckInterval
 
 func (h *heartbeat) mark(t time.Time) { h.last.Store(t.UnixNano()) }
 
@@ -103,7 +106,11 @@ func (h *heartbeat) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since := time.Since(time.Unix(0, h.last.Load())).Round(time.Second)
-	if since > staleAfter {
+	limit := h.staleAfter
+	if limit == 0 {
+		limit = staleAfter
+	}
+	if since > limit {
 		http.Error(w, fmt.Sprintf("no check for %s", since), http.StatusServiceUnavailable)
 		return
 	}
@@ -149,6 +156,7 @@ type line struct {
 	Repositories int                 `json:"repositories"`
 	Paused       map[string]string   `json:"paused,omitempty"`
 	Errors       map[string]string   `json:"errors,omitempty"`
+	Alerts       []capacityAlert     `json:"alerts,omitempty"`
 	// Cancelled and Rerun list runs moved off a down runner, as owner/name#id.
 	Cancelled []string `json:"cancelled,omitempty"`
 	Rerun     []string `json:"rerun,omitempty"`
@@ -205,7 +213,8 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	}
 	// An interval with a failed read writes nothing, so a transient error cannot
 	// move jobs onto a metered provider.
-	write := c.apply && len(l.Errors) == 0
+	readsOK := len(l.Errors) == 0
+	write := c.apply && readsOK
 	if c.apply && !write {
 		l.Errors["write"] = "skipped: a read failed"
 	}
@@ -255,9 +264,6 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 				l.Errors["move"] = err.Error()
 			}
 		}
-		if err := apply.SaveState(c.a.appliedPath(), c.state); err != nil {
-			l.Errors["state"] = err.Error()
-		}
 	}
 	if len(changes) > 0 && c.a.cfg.Notify != "" {
 		msg := "zerobill: " + strings.Join(changes, "; ")
@@ -266,6 +272,27 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		}
 		if err := notify.Send(c.a.cfg.Notify, msg); err != nil {
 			l.Errors["notify"] = err.Error()
+		}
+	}
+	// Low-capacity warnings need complete reads; failed sends remain eligible next check.
+	if readsOK {
+		l.Alerts = c.capacityAlerts(now, states)
+		if c.apply && c.a.cfg.Notify != "" {
+			for _, alert := range l.Alerts {
+				if c.state.Alerts[alert.Provider] {
+					continue
+				}
+				if err := notify.Send(c.a.cfg.Notify, alert.Message); err != nil {
+					l.Errors["notify capacity "+alert.Provider] = err.Error()
+				} else {
+					c.state.Alerts[alert.Provider] = true
+				}
+			}
+		}
+	}
+	if write {
+		if err := apply.SaveState(c.a.appliedPath(), c.state); err != nil {
+			l.Errors["state"] = err.Error()
 		}
 	}
 	if len(l.Errors) == 0 {
@@ -303,6 +330,14 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 	if st.Warm == nil {
 		st.Warm = map[string]bool{}
 	}
+	checkInterval := a.cfg.CheckInterval
+	if checkInterval == 0 {
+		checkInterval = config.DefaultCheckInterval
+	}
+	queueTimeout := a.cfg.QueueTimeout
+	if queueTimeout == 0 {
+		queueTimeout = config.DefaultQueueTimeout
+	}
 	states := make(map[string]policy.State, len(observed))
 	for _, p := range a.providers {
 		s, ok := observed[p.Name]
@@ -317,16 +352,16 @@ func adjust(a *app, st *apply.State, now time.Time, observed map[string]policy.S
 			switch d := now.Sub(since); {
 			case !s.Idle:
 				delete(st.IdleSince, p.Label)
-			case ok && d >= interval/2 && d < 2*interval:
+			case ok && d >= checkInterval/2 && d < 2*checkInterval:
 				st.Warm[p.Label] = true
-			case !ok || d >= 2*interval:
+			case !ok || d >= 2*checkInterval:
 				st.IdleSince[p.Label] = now
 			}
 			_, stalled := st.Stalled[p.Name]
 			switch {
 			case s.Online:
 				delete(st.Stalled, p.Name)
-			case s.OldestQueued > policy.MaxQueueWait && !stalled:
+			case s.OldestQueued > queueTimeout && !stalled:
 				st.Stalled[p.Name] = now
 			}
 			retry := policy.RetryAfter
@@ -359,4 +394,46 @@ func (c *controller) stuck(chosen map[string]bool, states map[string]policy.Stat
 		}
 	}
 	return runs
+}
+
+type capacityAlert struct {
+	Provider string `json:"provider"`
+	Message  string `json:"message"`
+}
+
+func (c *controller) capacityAlerts(now time.Time, states map[string]policy.State) []capacityAlert {
+	month := now.UTC().Format("2006-01")
+	if c.state.AlertMonth != month || c.state.AlertOwner != c.a.cfg.Owner {
+		c.state.AlertMonth, c.state.AlertOwner = month, c.a.cfg.Owner
+		c.state.Alerts = map[string]bool{}
+	}
+	if c.state.Alerts == nil {
+		c.state.Alerts = map[string]bool{}
+	}
+	threshold := c.a.cfg.AlertRemainingPercent
+	if threshold == 0 {
+		return nil
+	}
+	var alerts []capacityAlert
+	for _, p := range c.a.providers {
+		s, ok := states[p.Name]
+		if !ok || p.Kind != policy.Metered || p.Monthly <= 0 {
+			continue
+		}
+		remaining := max(0, p.Monthly-s.UsedMinutes)
+		percent := remaining * 100 / p.Monthly
+		if percent > float64(threshold) {
+			continue
+		}
+		action := "Free capacity is running low."
+		if c.a.cfg.SelfHostedLabel != "" {
+			action = "Turn on your self-hosted runners if needed."
+		}
+		msg := fmt.Sprintf("zerobill: %s has %.0f%% of its monthly free allowance left (%.0f min); reserve %d%%. %s Provider spending limits are still required to prevent charges.", p.Name, percent, remaining, c.a.cfg.ReservePercent, action)
+		if p.Name == "blacksmith" {
+			msg += " Blacksmith usage is estimated."
+		}
+		alerts = append(alerts, capacityAlert{Provider: p.Name, Message: msg})
+	}
+	return alerts
 }

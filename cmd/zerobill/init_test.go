@@ -27,7 +27,7 @@ func TestInit(t *testing.T) {
 			}
 			path, _ := config.Path()
 			c, err := config.Load(path)
-			if err != nil || c.Owner != "acme" || c.Runner != tt.runner || c.Blacksmith != tt.blacksmith || c.ReservePercent != 10 || c.Notify != "" {
+			if err != nil || c.Owner != "acme" || c.SelfHostedLabel != tt.runner || c.Blacksmith != tt.blacksmith || c.ReservePercent != 10 || c.Notify != "" {
 				t.Fatalf("config %+v: %v", c, err)
 			}
 			info, err := os.Stat(path)
@@ -61,7 +61,7 @@ func TestInitLeavesNoConfigOnIncompleteInput(t *testing.T) {
 func TestInitPreservesExistingConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path, _ := config.Path()
-	if err := config.Create(path, config.Config{Owner: "original", ReservePercent: 0}); err != nil {
+	if err := config.Create(path, config.Config{Owner: "original", ReservePercent: 0, AlertRemainingPercent: 20, CheckInterval: config.DefaultCheckInterval, QueueTimeout: config.DefaultQueueTimeout}); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer

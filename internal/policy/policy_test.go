@@ -75,7 +75,7 @@ func TestHold(t *testing.T) {
 		held    bool
 	}{
 		{"nothing applied", Applied{}, back, "runner", false},
-		{"runner back inside the hold", onBlacksmith, back, "blacksmith", true},
+		{"runner back inside the hold", onBlacksmith, back, "runner", false},
 		{"runner back after the hold", Applied{Provider: "blacksmith", Label: blacksmith.Label, Since: now.Add(-MinHold)}, back, "runner", false},
 		{"applied tier at reserve moves at once", onBlacksmith, map[string]State{"runner": {Online: true}, "blacksmith": {UsedMinutes: 2800}}, "runner", false},
 	}
@@ -86,5 +86,42 @@ func TestHold(t *testing.T) {
 				t.Fatalf("got %s held=%v (%s)", got.Provider, held, got.Reason)
 			}
 		})
+	}
+}
+
+func TestConfiguredQueueTimeout(t *testing.T) {
+	p := runner
+	p.QueueTimeout = 2 * time.Minute
+	for _, tt := range []struct {
+		wait   time.Duration
+		usable bool
+	}{
+		{time.Minute, true}, {2 * time.Minute, true}, {2*time.Minute + time.Second, false},
+	} {
+		got, _ := Usable(p, State{Online: true, OldestQueued: tt.wait})
+		if got != tt.usable {
+			t.Fatalf("wait %s usable %v", tt.wait, got)
+		}
+	}
+}
+
+func TestHostedHoldAndNoCapacity(t *testing.T) {
+	rt := Route{Variable: "CI_RUNNER", Providers: []Provider{blacksmith, github}, Fallback: Provider{Name: "waiting", Label: "zerobill-wait"}}
+	now := time.Now()
+	applied := Applied{Provider: "github", Label: github.Label, Since: now}
+	states := map[string]State{"blacksmith": {}, "github": {UsedMinutes: 1000}}
+	d, held := Hold(Decide(rt, states), applied, rt, states, now)
+	if !held || d.Provider != "github" {
+		t.Fatalf("hosted churn: %+v held %v", d, held)
+	}
+	states["github"] = State{UsedMinutes: 1800}
+	d, held = Hold(Decide(rt, states), applied, rt, states, now)
+	if held || d.Provider != "blacksmith" {
+		t.Fatalf("exhausted hold: %+v held %v", d, held)
+	}
+	states["blacksmith"] = State{UsedMinutes: 2700}
+	d, held = Hold(Decide(rt, states), applied, rt, states, now)
+	if held || d.Label != "zerobill-wait" {
+		t.Fatalf("paid fallback: %+v held %v", d, held)
 	}
 }

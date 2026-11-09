@@ -46,6 +46,10 @@ func (w *Writer) Set(repo, name, label string) (bool, error) {
 
 // State is what run keeps between intervals.
 type State struct {
+	// Alerts records successful low-capacity warnings for the owner and UTC billing month.
+	Alerts     map[string]bool `json:"alerts,omitempty"`
+	AlertMonth string          `json:"alert_month,omitempty"`
+	AlertOwner string          `json:"alert_owner,omitempty"`
 	// Routes holds the label applied per route, for the minimum hold.
 	Routes map[string]policy.Applied `json:"routes,omitempty"`
 	// Stalled holds when the self-hosted runner last had a queue stall with no
