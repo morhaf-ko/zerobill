@@ -36,8 +36,10 @@ type Collector struct {
 // Result holds the state of every provider that was observed and the error of
 // every provider that was not.
 type Result struct {
-	States map[string]policy.State
-	Errors map[string]string
+	States        map[string]policy.State
+	Errors        map[string]string
+	AccessProblem bool
+	RateLimited   bool
 	// Movable lists, per self-hosted provider, runs with a job queued on its label
 	// that can be cancelled and rerun without stopping a started job.
 	Movable map[string][]Run
@@ -76,6 +78,8 @@ func (c *Collector) Observe(providers []policy.Provider) Result {
 		}
 		if err != nil {
 			r.Errors[p.Name] = err.Error()
+			r.AccessProblem = r.AccessProblem || github.IsAccessDenied(err)
+			r.RateLimited = r.RateLimited || github.IsRateLimited(err)
 			continue
 		}
 		r.States[p.Name] = s
@@ -307,6 +311,15 @@ func (c *Collector) monthUsage() (*usage, error) {
 	repos, err := c.GH.Repos(c.Owner, c.Org)
 	if err != nil {
 		return nil, err
+	}
+	private := 0
+	for _, repo := range repos {
+		if repo.Private {
+			private++
+		}
+	}
+	if private == 0 {
+		return nil, fmt.Errorf("no private repositories visible; Blacksmith usage is unknown")
 	}
 	u := &usage{done: st.Jobs}
 	for _, r := range repos {

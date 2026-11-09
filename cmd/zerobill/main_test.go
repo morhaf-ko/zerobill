@@ -307,7 +307,7 @@ func TestRender(t *testing.T) {
 	states := map[string]policy.State{"runner": {Online: true}, "blacksmith": {UsedMinutes: 1200}, "github": {UsedMinutes: 200}}
 	found := discover.Result{Repos: []discover.Repo{{Name: "acme/app"}}, Fixed: []string{"acme/app .github/workflows/ci.yml:5: ubuntu-latest"}}
 	var out bytes.Buffer
-	if err := render(&out, time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC), a, nil, states, found, nil); err != nil {
+	if err := render(&out, time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC), a, nil, states, found, collect.Result{}); err != nil {
 		t.Fatal(err)
 	}
 	// 6 of 30 days gone: Blacksmith's 1200 minutes project to 6000, past its 2700 on 14 Nov.

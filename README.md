@@ -17,11 +17,19 @@ never falls back between the two:
 - A job sent to hosted runners after the free minutes are used is blocked or billed.
 - Dependency bots open pull requests at night, when your machine is off.
 
-Think of three ways to get to school: a parent's car that is free but only when they
-are home (your machine), a bus with 2,000 free rides a month (GitHub), and a carpool
-with 3,000 (Blacksmith). Without zerobill you pick one ride for good, so you either wait
-at the door for a car that is not coming, or spend bus rides on days the car was free.
-zerobill checks every few minutes and changes the sign on the door to the free ride.
+## What you need
+
+zerobill uses the GitHub API with one GitHub credential:
+
+| Provider | Set up first | How zerobill reads it |
+| --- | --- | --- |
+| GitHub-hosted | Access to your private repositories and account billing | GitHub's billing API; organization billing requires an appropriate administrator role and an available billing report. |
+| Your own runner (optional) | Install a self-hosted runner and give it a label | GitHub's runner and queued-job APIs. zerobill does not create runners. |
+| Blacksmith (optional) | Install the [Blacksmith GitHub App](https://www.blacksmith.sh/) for your owner and repositories | Estimates usage from GitHub Actions job labels and durations. No Blacksmith API key or CLI is needed. |
+
+The Blacksmith figure is an estimate, not an invoice. Only enable it if you already
+have access to Blacksmith runners. See the [self-hosted runner guide](docs/homelab.md)
+for your own machine and [security](SECURITY.md) for token permissions.
 
 zerobill does two things. Every 5 minutes it sets the repository variable `CI_RUNNER`
 to the best free runner, which your workflows read with
@@ -52,30 +60,46 @@ Problems:
 
 ## Install
 
+The guided workflow in this README follows `main`. Install it with:
+
 ```sh
-go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
+go install github.com/morhaf-ko/zerobill/cmd/zerobill@main
+zerobill version
 ```
 
-Or download a binary for Linux or macOS from the
-[latest release](https://github.com/morhaf-ko/zerobill/releases/latest), or run the
-image `ghcr.io/morhaf-ko/zerobill` with Docker.
+`@latest` installs the newest tagged release, which can be older than `main`.
+[Release binaries](https://github.com/morhaf-ko/zerobill/releases/latest) and the
+image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
 
 ## Quick start
 
-1. Sign in with the [GitHub CLI](https://cli.github.com/): `gh auth login`. zerobill uses
-   that login, so there is no token to create.
-2. Create your config with three short prompts:
+1. Create your config:
 
    ```sh
    zerobill init
    ```
 
-   Enter your GitHub user or organization, an optional runner label, and whether
-   you use Blacksmith. This creates `~/.config/zerobill/config.yaml` and leaves
-   existing configs untouched. You can also [write the config yourself](docs/reference.md#config).
+   Enter your GitHub user or organization, your runner label if you have one, and
+   whether you use Blacksmith. Init leaves existing configs untouched and tells
+   you how to sign in with the [GitHub CLI](https://cli.github.com/) if needed:
 
-3. Set the variable in each repository before pointing its workflows at it. A workflow
-   that reads an unset variable gets an empty `runs-on` and fails.
+   ```sh
+   gh auth login --hostname github.com
+   ```
+
+2. Check access and setup:
+
+   ```sh
+   zerobill status
+   ```
+
+   Status shows the GitHub account and credential source. When access or setup is
+   incomplete, it explains the problem, prints the next commands and exits with
+   status 1. It withholds usage estimates and recommendations until reads succeed.
+   The first Blacksmith estimate can take a few minutes; later checks use a cache.
+
+3. Connect the private repositories you want to route. Create the variable before
+   changing the workflow, so `runs-on` never reads an empty value:
 
    ```sh
    gh variable set CI_RUNNER --body ubuntu-latest --repo your-org/your-repo
@@ -85,31 +109,38 @@ image `ghcr.io/morhaf-ko/zerobill` with Docker.
    runs-on: ${{ vars.CI_RUNNER }}
    ```
 
-4. Check what zerobill sees: your free minutes, what it would choose, and any workflow
-   still using a fixed label.
+   Run `zerobill status` again. It identifies workflows still using a fixed label
+   and supplies a command using a discovered repository as an example.
 
-   ```sh
-   zerobill status
-   ```
-
-5. Run it on a machine that stays on. First watch what it would do; it logs one decision
-   every 5 minutes and changes nothing on GitHub:
+4. Preview decisions on a machine that stays on:
 
    ```sh
    zerobill run
    ```
 
-   When the decisions look right, let it act:
+   This logs decisions every 5 minutes. After reviewing them, enable routing:
 
    ```sh
    zerobill run --apply
    ```
 
-   To keep it running across reboots, use Docker with
-   [`examples/compose.yaml`](examples/compose.yaml) (isolated, read-only, needs a
-   `GITHUB_TOKEN`; it logs only until you change its command to `["run", "--apply"]`),
-   or the systemd user service in
-   [`examples/zerobill.service`](examples/zerobill.service) (uses your GitHub CLI login).
+   `--apply` changes repository variables and can cancel and rerun stalled jobs.
+   For a persistent service, use [Docker](examples/compose.yaml) or the
+   [systemd user service](examples/zerobill.service).
+
+## Which GitHub login is used?
+
+The order is `GITHUB_TOKEN`, then `GH_TOKEN`, then your stored GitHub CLI login.
+An environment token takes precedence even if `gh auth status` shows another account.
+To try the stored CLI login for one command without changing your shell settings:
+
+```sh
+env -u GITHUB_TOKEN -u GH_TOKEN zerobill status
+```
+
+Status suggests `gh auth refresh` when GitHub denies required reads. Extra scopes
+cannot grant an organization role or make an unavailable billing API available.
+For containers, supply a token with the [required permissions](SECURITY.md).
 
 ## Options
 
@@ -141,10 +172,9 @@ runs-on: ${{ github.actor == 'renovate[bot]' && vars.BOT_RUNNER || vars.CI_RUNNE
 repositories whose workflows read them. With `--apply` it also cancels and reruns jobs
 stuck on a runner that is down. Nothing else.
 
-**What access does it need?** Your GitHub CLI login, plus `gh auth refresh -s admin:org`
-for an organization (or `-s user` for a personal account) to read runners and billing.
-`zerobill status` tells you when that is missing. A `GITHUB_TOKEN` works too; see
-[security](SECURITY.md).
+**What access does it need?** GitHub access to private repositories, runners and billing.
+`zerobill status` identifies the credential and gives commands for missing access.
+Organization roles and fine-grained token permissions are listed in [security](SECURITY.md).
 
 **Can it cost me money?** By default it keeps 10% of every free tier in reserve;
 change that with `reserve_percent`. This buffer helps cover running jobs and delayed

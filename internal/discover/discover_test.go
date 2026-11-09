@@ -108,7 +108,7 @@ func TestDiscover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Repos) != 2 || got.Repos[0].Name != "acme/app" || !slices.Equal(got.Repos[0].Vars, []string{"CI_RUNNER"}) ||
+	if got.PrivateRepos != 4 || len(got.Repos) != 2 || got.Repos[0].Name != "acme/app" || !slices.Equal(got.Repos[0].Vars, []string{"CI_RUNNER"}) ||
 		!slices.Equal(got.Repos[1].Vars, []string{"BOT_RUNNER", "CI_RUNNER"}) {
 		t.Fatalf("repos %+v", got.Repos)
 	}

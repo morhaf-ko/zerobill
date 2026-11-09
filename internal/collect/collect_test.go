@@ -43,6 +43,24 @@ func newFake(t *testing.T) *fake {
 	return f
 }
 
+func TestBlacksmithUsageUnknownWithoutPrivateRepos(t *testing.T) {
+	f := newFake(t)
+	f.json("/orgs/acme/repos", `[]`)
+	r := f.collector("acme").Observe([]policy.Provider{{Name: "blacksmith", Kind: policy.Metered}})
+	if _, ok := r.States["blacksmith"]; ok || !strings.Contains(r.Errors["blacksmith"], "usage is unknown") {
+		t.Fatalf("states %v, errors %v", r.States, r.Errors)
+	}
+}
+
+func TestAccessFailureMetadata(t *testing.T) {
+	f := newFake(t)
+	f.routes["/orgs/acme/actions/runners"] = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }
+	r := f.collector("acme").Observe([]policy.Provider{{Name: "runner", Kind: policy.SelfHosted}})
+	if !r.AccessProblem || r.Errors["runner"] == "" {
+		t.Fatalf("result %+v", r)
+	}
+}
+
 func (f *fake) json(path, body string) {
 	f.routes[path] = func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }
 }
@@ -168,7 +186,7 @@ func TestBlacksmithCachesCompletedJobs(t *testing.T) {
 	f := newFake(t)
 	f.json("/users/acme", `{"type":"Organization"}`)
 	f.json("/orgs/acme/repos", `[
-		{"full_name":"acme/app","archived":false,"owner":{"login":"acme"}},
+		{"full_name":"acme/app","private":true,"archived":false,"owner":{"login":"acme"}},
 		{"full_name":"acme/old","archived":true,"owner":{"login":"acme"}}]`)
 	f.routes["/repos/acme/app/actions/runs"] = func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("created"); got != ">=2026-11-01" {
@@ -252,7 +270,7 @@ func TestObserveRoutesProvidersAndReportsErrors(t *testing.T) {
 
 func TestBlacksmithSkipsJobsThatNeverRan(t *testing.T) {
 	f := newFake(t)
-	f.json("/orgs/acme/repos", `[{"full_name":"acme/app","archived":false,"owner":{"login":"acme"}}]`)
+	f.json("/orgs/acme/repos", `[{"full_name":"acme/app","private":true,"archived":false,"owner":{"login":"acme"}}]`)
 	f.json("/repos/acme/app/actions/runs", `{"workflow_runs":[{"id":1,"run_attempt":1,"status":"completed"}]}`)
 	f.json("/repos/acme/app/actions/runs/1/jobs", fmt.Sprintf(`{"jobs":[
 		{"id":10,"status":"completed","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q,"runner_name":"bs-1"},
@@ -280,7 +298,7 @@ func TestOldCacheIsRebuilt(t *testing.T) {
 func TestBlacksmithSplitsMonthOverSearchCap(t *testing.T) {
 	f := newFake(t)
 	f.json("/users/acme", `{"type":"Organization"}`)
-	f.json("/orgs/acme/repos", `[{"full_name":"acme/app","owner":{"login":"acme"}}]`)
+	f.json("/orgs/acme/repos", `[{"full_name":"acme/app","private":true,"owner":{"login":"acme"}}]`)
 	var days []string
 	f.routes["/repos/acme/app/actions/runs"] = func(w http.ResponseWriter, r *http.Request) {
 		created := r.URL.Query().Get("created")
