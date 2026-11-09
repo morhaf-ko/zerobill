@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,11 +35,11 @@ func TestCredentialSource(t *testing.T) {
 	if got := credentialSource(); got != "GITHUB_TOKEN" {
 		t.Fatal(got)
 	}
-	if token, err := githubToken(); err != nil || token != "do-not-print-github" {
+	if token, err := githubToken(context.Background()); err != nil || token != "do-not-print-github" {
 		t.Fatal("wrong credential precedence")
 	}
 	t.Setenv("GITHUB_TOKEN", "")
-	if token, err := githubToken(); err != nil || token != "do-not-print-gh" {
+	if token, err := githubToken(context.Background()); err != nil || token != "do-not-print-gh" {
 		t.Fatal("GH_TOKEN not used")
 	}
 	for _, source := range []string{"GITHUB_TOKEN", "GH_TOKEN", "GitHub CLI"} {

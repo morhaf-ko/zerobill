@@ -98,6 +98,10 @@ image `ghcr.io/morhaf-ko/zerobill` also follow published releases.
    status 1. It withholds usage estimates and recommendations until reads succeed.
    The first Blacksmith estimate can take a few minutes; later checks use a cache.
 
+   Status prints its current phase and request count while it works. Press Ctrl+C
+   to cancel; a workflow request timeout stops the scan instead of repeating the
+   timeout across repositories.
+
 3. Connect the private repositories you want to route. Create the variable before
    changing the workflow, so `runs-on` never reads an empty value:
 

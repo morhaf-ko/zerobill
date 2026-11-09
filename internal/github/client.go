@@ -20,6 +20,8 @@ type Client struct {
 	BaseURL string
 	HTTP    *http.Client
 	token   string
+	// Progress receives the request path before I/O, without query parameters or credentials.
+	Progress func(string)
 }
 
 // New returns a client for api.github.com. The token is sent only in the
@@ -121,6 +123,9 @@ func (c *Client) do(method, u string, in, out any) (string, error) {
 	req.Header.Set("User-Agent", "zerobill")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.Progress != nil {
+		c.Progress(req.URL.Path)
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {

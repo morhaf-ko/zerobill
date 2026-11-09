@@ -43,7 +43,7 @@ func run(args []string) error {
 			return fmt.Errorf("unknown argument %q; run takes --apply and --health ADDRESS", args[i])
 		}
 	}
-	a, err := load(true)
+	a, err := load(true, nil)
 	if err != nil {
 		return err
 	}

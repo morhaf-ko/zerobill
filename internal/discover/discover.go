@@ -3,7 +3,9 @@
 package discover
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -194,6 +196,9 @@ func Discover(gh *github.Client, owner string, org bool) (Result, error) {
 		name := repo.Name
 		decls, err := workflows(gh, name)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return r, fmt.Errorf("workflow scan timed out at %s: %w", name, err)
+			}
 			r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", name, err))
 			r.AccessProblem = r.AccessProblem || github.IsAccessDenied(err)
 			r.RateLimited = r.RateLimited || github.IsRateLimited(err)
