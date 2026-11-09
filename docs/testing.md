@@ -17,10 +17,14 @@ If you already have this branch checked out, use it directly. Create a separate
 config so testing does not alter your existing setup:
 
 ```sh
+export GH_CONFIG_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
 export XDG_CONFIG_HOME="$(mktemp -d)"
 export XDG_STATE_HOME="$(mktemp -d)"
 go run ./cmd/zerobill init
 ```
+
+`GH_CONFIG_DIR` preserves your existing GitHub CLI login before changing the XDG
+location; only zerobill's config and state are isolated. Run these commands in a separate test shell and close it when done.
 
 Inspect `$XDG_CONFIG_HOME/zerobill/config.yaml`. Only your owner and selected options
 should be active; optional defaults are commented. To use an existing config, copy

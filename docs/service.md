@@ -23,16 +23,17 @@ installing zerobill does not start a background service.
 ## Native Linux service
 
 Run these steps as the user who will own the service, on that machine. Install the
-GitHub CLI, then either install a published Go build:
+GitHub CLI, then prepare the binary directory for either installation method:
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-GOBIN="$HOME/.local/bin" go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
 export PATH="$HOME/.local/bin:$PATH"
-zerobill version
 ```
 
-Or download and verify a [release archive](https://github.com/morhaf-ko/zerobill/releases),
+Choose one installation method:
+
+- With Go installed: `GOBIN="$HOME/.local/bin" go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest`.
+- Or download and verify a [release archive](https://github.com/morhaf-ko/zerobill/releases),
 extract it, and install its binary with `install -m 755 ./zerobill "$HOME/.local/bin/zerobill"`.
 Archives include this guide and the service examples. To test an unreleased checkout,
 replace the Go install command with `GOBIN="$HOME/.local/bin" go install ./cmd/zerobill`.
@@ -41,8 +42,9 @@ Authenticate and configure on this machine:
 
 ```sh
 gh auth login --hostname github.com
+zerobill version
 zerobill init
-zerobill status
+env -u GITHUB_TOKEN -u GH_TOKEN zerobill status
 ```
 
 Follow status's access and workflow instructions. `GITHUB_TOKEN` and `GH_TOKEN`
