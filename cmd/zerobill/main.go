@@ -68,11 +68,13 @@ func main() {
 	case "help", "-h", "--help":
 		fmt.Println(usage)
 	default:
-		fmt.Fprintln(os.Stderr, usage)
+		fmt.Fprintf(os.Stderr, "zerobill: unknown command %q (version %s).\nRun zerobill help for available commands.\n", cmd, buildVersion())
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "zerobill:", err)
+		if !errors.Is(err, errStatusIncomplete) {
+			fmt.Fprintln(os.Stderr, "zerobill:", err)
+		}
 		os.Exit(1)
 	}
 }
@@ -80,13 +82,15 @@ func main() {
 // app is what every command needs: the config and the providers and routes it
 // implies, plus GitHub access for commands that read GitHub.
 type app struct {
-	cfg       *config.Config
-	stateDir  string
-	providers []policy.Provider
-	routes    []policy.Route
-	gh        *github.Client
-	col       *collect.Collector
-	org       bool
+	cfg        *config.Config
+	stateDir   string
+	providers  []policy.Provider
+	routes     []policy.Route
+	gh         *github.Client
+	col        *collect.Collector
+	org        bool
+	login      string
+	authSource string
 }
 
 // load reads the config; with online set it also connects to GitHub.
@@ -109,29 +113,44 @@ func load(online bool) (*app, error) {
 		return nil, err
 	}
 	a.gh = github.New(token)
-	if a.org, err = collect.IsOrg(a.gh, cfg.Owner); err != nil {
-		return nil, fmt.Errorf("read owner %s: %w", cfg.Owner, err)
+	a.authSource = credentialSource()
+	if err := a.connect(); err != nil {
+		return nil, err
 	}
+	return a, nil
+}
+
+func (a *app) connect() error {
+	cfg := a.cfg
 	var acct struct {
 		Login string `json:"login"`
 		Plan  struct {
 			Name string `json:"name"`
 		} `json:"plan"`
 	}
+	if err := a.gh.Get("/user", &acct); err != nil {
+		return connectionProblem("verify the GitHub login", a.authSource, cfg.Owner, false, err)
+	}
+	if acct.Login == "" {
+		return errors.New("GitHub did not return an account identity; check the credential with gh auth status --hostname github.com")
+	}
+	a.login = acct.Login
+	var err error
+	if a.org, err = collect.IsOrg(a.gh, cfg.Owner); err != nil {
+		return connectionProblem("read owner "+cfg.Owner, a.authSource, cfg.Owner, false, err)
+	}
 	if a.org {
 		// The plan is best effort: only organization owners can read it.
+		acct.Plan.Name = ""
 		_ = a.gh.Get("/orgs/"+cfg.Owner, &acct)
 	} else {
-		if err := a.gh.Get("/user", &acct); err != nil {
-			return nil, fmt.Errorf("read the signed-in user: %w", err)
-		}
 		if !strings.EqualFold(acct.Login, cfg.Owner) {
-			return nil, fmt.Errorf("owner %s is a personal account, so zerobill must run as that user, not %s", cfg.Owner, acct.Login)
+			return fmt.Errorf("signed in as %s using %s, but owner %s is a personal account; use that account's credential or change owner in the config", acct.Login, a.authSource, cfg.Owner)
 		}
 	}
-	a.col = &collect.Collector{GH: a.gh, Owner: cfg.Owner, Org: a.org, StatePath: filepath.Join(stateDir, "cache.json")}
+	a.col = &collect.Collector{GH: a.gh, Owner: cfg.Owner, Org: a.org, StatePath: filepath.Join(a.stateDir, "cache.json")}
 	a.providers, a.routes = build(cfg, includedMinutes(acct.Plan.Name))
-	return a, nil
+	return nil
 }
 
 // loadConfig prefers ZEROBILL_* environment variables and falls back to the file.
@@ -151,12 +170,15 @@ func githubToken() (string, error) {
 	if t := os.Getenv("GITHUB_TOKEN"); t != "" {
 		return t, nil
 	}
+	if t := os.Getenv("GH_TOKEN"); t != "" {
+		return t, nil
+	}
 	out, err := exec.Command("gh", "auth", "token", "--hostname", "github.com").Output()
 	if errors.Is(err, exec.ErrNotFound) {
-		return "", errors.New("no GitHub access: set GITHUB_TOKEN, or install the GitHub CLI and run gh auth login")
+		return "", errors.New("GitHub CLI is not installed. Install it from https://cli.github.com, then run:\n  gh auth login --hostname github.com\n  zerobill status\nFor token-based setup, see https://github.com/morhaf-ko/zerobill/blob/main/SECURITY.md")
 	}
 	if err != nil || strings.TrimSpace(string(out)) == "" {
-		return "", errors.New("no GitHub access: run gh auth login, or set GITHUB_TOKEN")
+		return "", errors.New("no GitHub login available. Run:\n  gh auth login --hostname github.com\n  zerobill status\nIf GH_TOKEN is set, it overrides the stored GitHub CLI login")
 	}
 	return strings.TrimSpace(string(out)), nil
 }

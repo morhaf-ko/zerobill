@@ -163,7 +163,11 @@ type Repo struct {
 
 // Result is what Discover found.
 type Result struct {
-	Repos []Repo
+	Repos         []Repo
+	PrivateRepos  int
+	ExampleRepo   string
+	AccessProblem bool
+	RateLimited   bool
 	// Fixed are runs-on declarations pinned to a literal label, which zerobill
 	// cannot route, as "owner/name path:line: value".
 	Fixed []string
@@ -183,10 +187,16 @@ func Discover(gh *github.Client, owner string, org bool) (Result, error) {
 		if !repo.Private {
 			continue
 		}
+		r.PrivateRepos++
+		if r.ExampleRepo == "" {
+			r.ExampleRepo = repo.Name
+		}
 		name := repo.Name
 		decls, err := workflows(gh, name)
 		if err != nil {
 			r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", name, err))
+			r.AccessProblem = r.AccessProblem || github.IsAccessDenied(err)
+			r.RateLimited = r.RateLimited || github.IsRateLimited(err)
 			continue
 		}
 		var vars []string

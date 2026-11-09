@@ -31,10 +31,19 @@ month's jobs, the last decision per variable, and pauses.
 
 ## Access
 
-zerobill uses `GITHUB_TOKEN` when it is set, and otherwise the GitHub CLI login
-(`gh auth token`). Reading runners and billing needs `gh auth refresh -s admin:org` for
+zerobill uses `GITHUB_TOKEN`, then `GH_TOKEN`, then the stored GitHub CLI login
+(`gh auth token`). Status displays the source and authenticated account. Environment
+tokens take precedence over the stored login. Reading runners and billing needs `gh auth refresh -s admin:org` for
 an organization, or `-s user` for a personal account. A personal account must be the
 signed-in user. For a narrower token, see [security](../SECURITY.md).
+
+`status` exits with 1 when reads fail, no private repositories are visible, or no
+workflow uses the routing variables. It prints recovery commands and withholds
+usage estimates and recommendations. A billing 404 can mean missing access or an
+unavailable billing report; adding scopes is not a guaranteed fix.
+
+Blacksmith requires its GitHub App to be installed, but zerobill calls no Blacksmith
+API. Its usage estimate comes from GitHub Actions job labels and durations.
 
 ## Conventions
 

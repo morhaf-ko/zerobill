@@ -66,6 +66,7 @@ func (c *Client) Paginate(path string, page func(body []byte) error) error {
 type StatusError struct {
 	Method, Path, Status, Message string
 	Code                          int
+	RateLimited                   bool
 }
 
 func (e *StatusError) Error() string {
@@ -76,6 +77,17 @@ func (e *StatusError) Error() string {
 func IsNotFound(err error) bool {
 	var se *StatusError
 	return errors.As(err, &se) && se.Code == http.StatusNotFound
+}
+
+func IsRateLimited(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.RateLimited && se.Code != http.StatusUnauthorized
+}
+
+// IsAccessDenied excludes rate limits, which re-authenticating cannot fix.
+func IsAccessDenied(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && (se.Code == http.StatusUnauthorized || (se.Code == http.StatusForbidden && !se.RateLimited))
 }
 
 // Send issues a write request with a JSON body to path, relative to BaseURL.
@@ -124,7 +136,8 @@ func (c *Client) do(method, u string, in, out any) (string, error) {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(body, &e)
-		return "", &StatusError{Method: method, Path: redact(u), Status: resp.Status, Message: e.Message, Code: resp.StatusCode}
+		return "", &StatusError{Method: method, Path: redact(u), Status: resp.Status, Message: e.Message, Code: resp.StatusCode,
+			RateLimited: resp.StatusCode == 429 || resp.Header.Get("X-RateLimit-Remaining") == "0" || resp.Header.Get("Retry-After") != "" || strings.Contains(strings.ToLower(e.Message), "secondary rate limit")}
 	}
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {
