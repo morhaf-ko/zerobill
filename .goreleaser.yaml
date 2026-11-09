@@ -13,7 +13,17 @@ builds:
 
 archives:
   - formats: [tar.gz]
-    files: [LICENSE, README.md, SECURITY.md, CONTRIBUTING.md, "docs/**/*", "examples/**/*"]
+    files:
+      - LICENSE
+      - README.md
+      - SECURITY.md
+      - CONTRIBUTING.md
+      - src: docs/*
+        dst: docs
+        strip_parent: true
+      - src: examples/*
+        dst: examples
+        strip_parent: true
 
 checksum:
   name_template: checksums.txt
