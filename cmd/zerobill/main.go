@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -94,7 +95,7 @@ type app struct {
 }
 
 // load reads the config; with online set it also connects to GitHub.
-func load(online bool) (*app, error) {
+func load(online bool, progress func(string)) (*app, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
@@ -108,11 +109,14 @@ func load(online bool) (*app, error) {
 		a.providers, a.routes = build(cfg, 0)
 		return a, nil
 	}
-	token, err := githubToken()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	token, err := githubToken(ctx)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
 	a.gh = github.New(token)
+	a.gh.Progress = progress
 	a.authSource = credentialSource()
 	if err := a.connect(); err != nil {
 		return nil, err
@@ -166,14 +170,19 @@ func loadConfig() (*config.Config, error) {
 }
 
 // githubToken prefers GITHUB_TOKEN and falls back to the GitHub CLI's login.
-func githubToken() (string, error) {
+func githubToken(ctx context.Context) (string, error) {
 	if t := os.Getenv("GITHUB_TOKEN"); t != "" {
 		return t, nil
 	}
 	if t := os.Getenv("GH_TOKEN"); t != "" {
 		return t, nil
 	}
-	out, err := exec.Command("gh", "auth", "token", "--hostname", "github.com").Output()
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", "github.com")
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", errors.New("GitHub CLI credential lookup timed out. Check for a keychain prompt, then run gh auth status --hostname github.com before retrying zerobill status")
+	}
 	if errors.Is(err, exec.ErrNotFound) {
 		return "", errors.New("GitHub CLI is not installed. Install it from https://cli.github.com, then run:\n  gh auth login --hostname github.com\n  zerobill status\nFor token-based setup, see https://github.com/morhaf-ko/zerobill/blob/main/SECURITY.md")
 	}
@@ -240,7 +249,7 @@ func providerArg(a *app, args []string) (string, error) {
 }
 
 func pause(args []string, now time.Time) error {
-	a, err := load(false)
+	a, err := load(false, nil)
 	if err != nil {
 		return err
 	}
@@ -269,7 +278,7 @@ func pause(args []string, now time.Time) error {
 }
 
 func resume(args []string) error {
-	a, err := load(false)
+	a, err := load(false, nil)
 	if err != nil {
 		return err
 	}

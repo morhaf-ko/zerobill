@@ -22,10 +22,13 @@ func status(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument %q; status takes none", args[0])
 	}
-	a, err := load(true)
+	progress := statusProgress(os.Stderr)
+	progress("")
+	a, err := load(true, progress)
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(os.Stderr, "GitHub: %s via %s; owner: %s.\n", a.login, a.authSource, a.cfg.Owner)
 	return reportStatus(os.Stdout, a)
 }
 
@@ -36,7 +39,7 @@ func reportStatus(w io.Writer, a *app) error {
 	}
 	found, err := discover.Discover(a.gh, a.cfg.Owner, a.org)
 	if err != nil {
-		return connectionProblem("list private repositories", a.authSource, a.cfg.Owner, a.org, err)
+		return connectionProblem("read private repositories and workflows", a.authSource, a.cfg.Owner, a.org, err)
 	}
 	if len(found.Repos) == 0 || len(found.Errors) > 0 {
 		return render(w, time.Now().UTC(), a, st.Routes, nil, found, collect.Result{AccessProblem: found.AccessProblem, RateLimited: found.RateLimited})
