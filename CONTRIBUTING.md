@@ -1,5 +1,7 @@
 # Contributing
 
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
 Open an issue before a large change, so the approach can be agreed first. Small fixes can go straight to a pull request.
 
 - Keep `internal/policy` pure: no I/O, no clock reads.
