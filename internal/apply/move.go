@@ -117,7 +117,19 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 	if st.Rerun == nil {
 		st.Rerun = map[string]Moved{}
 	}
-	save := func(k string, m Moved) error { st.Cancelled[k] = m; return checkpoint() }
+	save := func(k string, m Moved) error {
+		previous, exists := st.Cancelled[k]
+		st.Cancelled[k] = m
+		if err := checkpoint(); err != nil {
+			if exists {
+				st.Cancelled[k] = previous
+			} else {
+				delete(st.Cancelled, k)
+			}
+			return err
+		}
+		return nil
+	}
 	handled := func(k string, m Moved) error {
 		delete(st.Cancelled, k)
 		m.At = now
@@ -190,6 +202,8 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 			}
 			next := m.Run
 			next.Attempt = run.Attempt
+			// An attention record must track the observed rerun, not its cancelled predecessor.
+			m.Attempt = run.Attempt
 			jobs, err := w.jobs(next)
 			if err != nil {
 				if err := readError(k, m, err); err != nil {

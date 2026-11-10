@@ -273,8 +273,14 @@ func TestMoveChecksRerunLabelsAndExternalAttempts(t *testing.T) {
 		f.move(t, &st, time.Minute)
 		f.jobs[2][0].Labels = []string{"home-ci"}
 		f.move(t, &st, 2*time.Minute, moveRun)
-		if !st.Cancelled[key(moveRun)].NeedsAttention() {
+		f.move(t, &st, 3*time.Minute, moveRun)
+		if !st.Cancelled[key(moveRun)].NeedsAttention() || st.Cancelled[key(moveRun)].Attempt != 2 {
 			t.Fatal(st)
+		}
+		f.run.Attempt = 3
+		f.move(t, &st, 4*time.Minute)
+		if len(st.Cancelled) != 0 || len(f.posts) != 1 {
+			t.Fatalf("%+v %v", st, f.posts)
 		}
 	})
 	t.Run("external rerun", func(t *testing.T) {
@@ -349,11 +355,25 @@ func TestMoveRestartNeverRepeatsUnconfirmedPost(t *testing.T) {
 }
 
 func TestMoveCheckpointFailurePreventsMutation(t *testing.T) {
-	f := newMoveFixture(t)
-	st := State{}
-	_, err := f.writer.Move(&st, []collect.Run{moveRun}, moveTargets, moveTime, func() error { return errors.New("disk full") })
-	if err == nil || len(f.posts) != 0 {
-		t.Fatalf("%v %v", err, f.posts)
+	for _, action := range []string{"cancel", "force-cancel", "rerun-failed-jobs"} {
+		t.Run(action, func(t *testing.T) {
+			f := newMoveFixture(t)
+			st := State{}
+			if action != "cancel" {
+				st = ownedCancellation()
+			}
+			if action == "rerun-failed-jobs" {
+				f.complete()
+			}
+			_, err := f.writer.Move(&st, []collect.Run{moveRun}, moveTargets, moveTime.Add(5*time.Minute), func() error { return errors.New("disk full") })
+			if err == nil || len(f.posts) != 0 || st.Cancelled[key(moveRun)].Stage != "" {
+				t.Fatalf("%+v %v %v", st, err, f.posts)
+			}
+			f.move(t, &st, 6*time.Minute, moveRun)
+			if !slices.Equal(f.posts, []string{action}) {
+				t.Fatalf("request not issued after storage recovered: %v", f.posts)
+			}
+		})
 	}
 }
 
