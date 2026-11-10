@@ -6,6 +6,12 @@ zerobill uses `GITHUB_TOKEN`, then `GH_TOKEN`, then your stored GitHub CLI login
 Environment tokens override the stored login; status shows the selected source and account.
 No Blacksmith API key is used. With `run --apply` it writes the `CI_RUNNER` and `BOT_RUNNER` repository variables and cancels and reruns workflow runs.
 
+Applied recovery can force-cancel an owned cancellation after five minutes only
+when the same attempt has no executed jobs. GitHub's run-level cancellation API
+has no atomic attempt guard, so an external state change can race the final read.
+Use one applied controller and retain its state; ambiguous recoveries require
+operator attention. See the [recovery contract](docs/reference.md#what-run---apply-does).
+
 To narrow what it can do, give it a fine-grained token with access to all of the owner's repositories:
 
 | Need | Permissions |

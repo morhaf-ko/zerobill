@@ -137,11 +137,40 @@ Each interval it sets `CI_RUNNER` and `BOT_RUNNER` in the repositories that read
 writing only values that differ, so a manual edit is corrected. An interval in which any
 read failed writes nothing.
 
-`runs-on` is read when a job is queued, so a job already waiting on a down runner keeps
-its label. Once every variable holds the new label, zerobill cancels runs whose queued
-jobs all target the down runner, and on the next interval reruns their cancelled jobs,
-which read the new label. Runs with a started or failed job are left alone, and each run
-moves at most once.
+`runs-on` is read when a job is queued, so changing a variable does not move an
+already queued job. Once all variables hold the selected labels, zerobill rechecks
+the run attempt and cancels runs whose queued jobs still target the unavailable
+runner. It leaves running or failed jobs alone and preserves successful jobs.
+
+Recovery uses the existing check interval and persistent state:
+
+1. Request normal cancellation and wait for confirmed completion.
+2. After at least five minutes, request force cancellation once only if the same
+   attempt still has queued jobs and no job in that attempt has executed. Completed
+   successful jobs also prevent force cancellation. Empty or ambiguous job metadata,
+   changed attempts and deployment/concurrency waits prevent escalation.
+3. After confirmed cancellation, request one rerun of cancelled jobs. Then verify a
+   new attempt and its visible jobs' labels against the applied routes before
+   reporting `rerun`. Unrelated failed jobs are not retried.
+
+Each request's intent is saved before sending it. Restarts do not repeat uncertain
+requests. Force cancellation and rerun verification each have a five-minute wait,
+evaluated on the next successful check. An unresolved recovery remains recorded
+instead of being automatically cancelled again. Logs show `recovery` with the run
+URL, attempt and reason; a configured `notify` hook receives the warning once after
+successful delivery. Failed warning delivery retries on the next successful check.
+`force_cancel_requested` reports GitHub accepting a request, not completion.
+
+GitHub's force-cancel endpoint bypasses conditions such as `always()` and has no
+atomic attempt precondition. Fresh checks reduce but cannot eliminate a race with
+external reruns or newly started work. Some GitHub-side orphaned runs cannot be
+cleared even by force cancellation; inspect the linked run and follow
+[GitHub's troubleshooting guidance](https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows).
+zerobill does not dispatch replacement workflows or bypass concurrency protections.
+
+Keep the state volume across upgrades. Before downgrading an applied controller,
+stop it and have the operator inspect pending recovery records: older binaries do
+not understand the new request phases. Do not delete the journal to retry recovery.
 
 Without `--apply`, `run` logs the same decisions as JSON lines and writes nothing.
 

@@ -50,6 +50,7 @@ type Run struct {
 	Repo    string `json:"repo"`
 	ID      int64  `json:"id"`
 	Attempt int    `json:"attempt"`
+	Label   string `json:"label,omitempty"`
 }
 
 // Observe collects state for each provider. A failed provider is reported in
@@ -136,7 +137,7 @@ type job struct {
 
 // selfHosted reads whether runners carry label and are online, and the age of the
 // oldest job queued on it. It also returns the runs that can move off the label:
-// every queued job is on it, no job has started, and no completed job failed or
+// every queued job is on it, no job is running, and no completed job failed or
 // was cancelled, so rerunning failed jobs reruns only what zerobill cancelled.
 func (c *Collector) selfHosted(label string) (policy.State, []Run, error) {
 	paths := []string{"/orgs/" + url.PathEscape(c.Owner) + "/actions/runners?per_page=100"}
@@ -203,7 +204,7 @@ func (c *Collector) selfHosted(label string) (policy.State, []Run, error) {
 					}
 				}
 				if onLabel && !pinned {
-					movable = append(movable, Run{Repo: repo, ID: run.ID, Attempt: run.RunAttempt})
+					movable = append(movable, Run{Repo: repo, ID: run.ID, Attempt: run.RunAttempt, Label: label})
 				}
 			}
 		}
