@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/morhaf-ko/zerobill/internal/apply"
 	"github.com/morhaf-ko/zerobill/internal/collect"
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/discover"
@@ -36,6 +37,141 @@ func TestBuild(t *testing.T) {
 	if !slices.Equal(names, []string{"runner", "blacksmith", "github"}) || len(providers) != 3 ||
 		routes[1].Variable != "BOT_RUNNER" || len(routes[1].Providers) != 2 || routes[1].Fallback.Name != "runner" || providers[2].Monthly != 3000 {
 		t.Fatalf("full: %+v %+v", providers, routes)
+	}
+}
+
+func TestRecoveryAlertRetriesFailedDeliveryAndSurvivesRestart(t *testing.T) {
+	c, vars := newTestController(t, true)
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/app/actions/runs/42" {
+			fmt.Fprint(w, "{\"status\":\"queued\",\"run_attempt\":1}")
+			return
+		}
+		vars.ServeHTTP(w, r)
+	}))
+	defer gh.Close()
+	c.a.gh.BaseURL = gh.URL
+	attempts := 0
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "recovery needs attention") {
+			attempts++
+			if attempts == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hook.Close()
+	c.a.cfg.Notify = hook.URL
+	c.state.Cancelled = map[string]apply.Moved{"acme/app#42": {
+		Run: collect.Run{Repo: "acme/app", ID: 42, Attempt: 1}, At: now,
+		Stage: "needs_attention", Problem: "force cancellation did not complete",
+	}}
+	l := step(t, c, 0, result(policy.State{}))
+	if attempts != 1 || l.Errors["notify recovery acme/app#42"] == "" || c.state.Cancelled["acme/app#42"].Alerted {
+		t.Fatalf("failed delivery: %d %+v", attempts, l)
+	}
+	l = step(t, c, time.Minute, result(policy.State{}))
+	if attempts != 2 || !c.state.Cancelled["acme/app#42"].Alerted || !strings.Contains(l.Recovery["acme/app#42"], "https://github.com/acme/app/actions/runs/42") {
+		t.Fatalf("successful delivery: %d %+v", attempts, l)
+	}
+	restarted, err := newController(c.a, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.repos = c.repos
+	step(t, restarted, 2*time.Minute, result(policy.State{}))
+	if attempts != 2 {
+		t.Fatalf("restart duplicated alert: %d", attempts)
+	}
+	preview, err := newController(c.a, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := preview.state.Cancelled["acme/app#42"]
+	m.Alerted = false
+	preview.state.Cancelled["acme/app#42"] = m
+	step(t, preview, 3*time.Minute, result(policy.State{}))
+	if attempts != 2 {
+		t.Fatal("log-only mode sent a recovery alert")
+	}
+}
+
+func TestRecoveryJourneyWritesTargetsBeforeCancelAndVerifiesRerun(t *testing.T) {
+	c, vars := newTestController(t, true)
+	c.repos = c.repos[:1]
+	attempt, status, conclusion := 1, "queued", ""
+	var posts []string
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/actions/variables") {
+			vars.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			action := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			posts = append(posts, action)
+			if vars.values["acme/app/CI_RUNNER"] != blacksmithLabel {
+				t.Error("cancelled before updating the route")
+			}
+			switch action {
+			case "cancel":
+			case "force-cancel":
+				status, conclusion = "completed", "cancelled"
+			case "rerun-failed-jobs":
+				attempt++
+				status, conclusion = "queued", ""
+			default:
+				t.Errorf("unexpected POST %s", r.URL.Path)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/jobs") {
+			label := "home-ci"
+			if attempt == 2 {
+				label = blacksmithLabel
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jobs": []any{map[string]any{
+				"id": 1, "status": status, "conclusion": conclusion, "labels": []string{label}, "runner_id": 0, "steps": []any{},
+			}}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "conclusion": conclusion, "run_attempt": attempt})
+	}))
+	defer gh.Close()
+	c.a.gh.BaseURL = gh.URL
+	r := result(policy.State{Registered: true, OldestQueued: 20 * time.Minute})
+	r.Movable = map[string][]collect.Run{"runner": {{Repo: "acme/app", ID: 1, Attempt: 1, Label: "home-ci"}}}
+	l := step(t, c, 0, r)
+	if len(l.Cancelled) != 1 {
+		t.Fatalf("first check: %+v", l)
+	}
+	restart := func() {
+		next, err := newController(c.a, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next.repos = c.repos
+		c = next
+	}
+	restart()
+	if l = step(t, c, 4*time.Minute, r); len(l.Forced) != 0 {
+		t.Fatal("forced before grace")
+	}
+	if l = step(t, c, 5*time.Minute, r); len(l.Forced) != 1 {
+		t.Fatalf("force: %+v", l)
+	}
+	restart()
+	if l = step(t, c, 6*time.Minute, r); len(l.Rerun) != 0 {
+		t.Fatal("rerun not yet verified")
+	}
+	if l = step(t, c, 7*time.Minute, r); len(l.Rerun) != 1 || len(l.Errors) != 0 {
+		t.Fatalf("verification: %+v", l)
+	}
+	if !slices.Equal(posts, []string{"cancel", "force-cancel", "rerun-failed-jobs"}) {
+		t.Fatal(posts)
 	}
 }
 

@@ -158,8 +158,10 @@ type line struct {
 	Errors       map[string]string   `json:"errors,omitempty"`
 	Alerts       []capacityAlert     `json:"alerts,omitempty"`
 	// Cancelled and Rerun list runs moved off a down runner, as owner/name#id.
-	Cancelled []string `json:"cancelled,omitempty"`
-	Rerun     []string `json:"rerun,omitempty"`
+	Cancelled []string          `json:"cancelled,omitempty"`
+	Rerun     []string          `json:"rerun,omitempty"`
+	Forced    []string          `json:"force_cancel_requested,omitempty"`
+	Recovery  map[string]string `json:"recovery,omitempty"`
 }
 
 type routeLine struct {
@@ -258,10 +260,36 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		// Runs move only once every variable holds its new label, so a rerun job reads it.
 		if allWritten {
 			checkpoint := func() error { return apply.SaveState(c.a.appliedPath(), c.state) }
-			var err error
-			l.Cancelled, l.Rerun, err = c.writer.Move(&c.state, c.stuck(chosen, states, r), now, checkpoint)
+			targets := map[string][]string{}
+			for _, repo := range c.repos {
+				for _, route := range l.Routes {
+					if reads(repo, route.Variable) {
+						targets[repo.Name] = append(targets[repo.Name], route.Label)
+					}
+				}
+			}
+			moves, err := c.writer.Move(&c.state, c.stuck(chosen, states, r), targets, now, checkpoint)
+			l.Cancelled, l.Forced, l.Rerun = moves.Cancelled, moves.Forced, moves.Rerun
 			if err != nil {
 				l.Errors["move"] = err.Error()
+			}
+		}
+	}
+	for k, m := range c.state.Cancelled {
+		if !m.NeedsAttention() {
+			continue
+		}
+		if l.Recovery == nil {
+			l.Recovery = map[string]string{}
+		}
+		message := fmt.Sprintf("zerobill: recovery needs attention: https://github.com/%s/actions/runs/%d attempt %d: %s", m.Repo, m.ID, m.Attempt, m.Problem)
+		l.Recovery[k] = message
+		if write && !m.Alerted && c.a.cfg.Notify != "" {
+			if err := notify.Send(c.a.cfg.Notify, message); err != nil {
+				l.Errors["notify recovery "+k] = err.Error()
+			} else {
+				m.Alerted = true
+				c.state.Cancelled[k] = m
 			}
 		}
 	}

@@ -115,7 +115,7 @@ func TestSelfHostedOrg(t *testing.T) {
 	}
 	// Run 2 has a started job, run 3 a job queued on a healthy label, run 4 a failed
 	// job a rerun would repeat, and run 5 no job on the label.
-	if len(movable) != 1 || movable[0] != (Run{Repo: "acme/app", ID: 1, Attempt: 1}) {
+	if len(movable) != 1 || movable[0] != (Run{Repo: "acme/app", ID: 1, Attempt: 1, Label: "home-ci"}) {
 		t.Fatalf("movable %+v, want only run 1", movable)
 	}
 	if f.hits["/orgs/acme/actions/runners"] != 2 {

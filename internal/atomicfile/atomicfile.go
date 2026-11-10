@@ -7,7 +7,7 @@ import (
 )
 
 // Write replaces path with raw, readable only by its owner, through a temporary
-// file in the same directory.
+// file in the same directory, syncing the file and directory before returning.
 func Write(path string, raw []byte) error {
 	return write(path, raw, true)
 }
@@ -30,11 +30,25 @@ func write(path string, raw []byte, replace bool) error {
 		tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
 	if replace {
-		return os.Rename(tmp.Name(), path)
+		err = os.Rename(tmp.Name(), path)
+	} else {
+		err = os.Link(tmp.Name(), path)
 	}
-	return os.Link(tmp.Name(), path)
+	if err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
