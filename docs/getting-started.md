@@ -9,11 +9,10 @@ logs instead of starting another applied controller for the same owner.
 
 ## 1. Install and sign in
 
-Install [Go](https://go.dev/doc/install) and the [GitHub CLI](https://cli.github.com/).
-Then run:
+Install zerobill using [mise, a release archive or Go](../README.md#installation),
+and install the [GitHub CLI](https://cli.github.com/). Then run:
 
 ```sh
-go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
 zerobill version
 gh auth login --hostname github.com
 zerobill init

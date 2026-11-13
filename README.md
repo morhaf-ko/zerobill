@@ -39,14 +39,50 @@ Checks run every 5 minutes by default, configurable down to 1 minute. With
 `run --apply`, zerobill also cancels and reruns eligible jobs stalled on an
 unavailable self-hosted label. Already started or failed jobs are left alone.
 
-## Try it
+## Installation
 
-Install [Go](https://go.dev/doc/install) and the [GitHub CLI](https://cli.github.com/),
-then run:
+Choose one installation method. Prebuilt binaries support macOS and Linux on
+Intel/AMD (`amd64`) and ARM (`arm64`); Go is only required when building from source.
+
+### With mise
+
+With [mise](https://mise.jdx.dev) activated in your shell:
+
+```sh
+mise use -g github:morhaf-ko/zerobill@latest
+zerobill version
+```
+
+The GitHub backend downloads the release archive for your platform. Update with
+`mise upgrade github:morhaf-ko/zerobill`. A mise `latest` setting uses the newest
+installed version; it does not download updates on every invocation.
+
+### From a release archive
+
+Download the archive for your operating system and architecture, along with
+`checksums.txt`, from [the latest release](https://github.com/morhaf-ko/zerobill/releases/latest).
+Verify the archive's SHA-256 against `checksums.txt`, extract it, and place the
+`zerobill` executable in a directory on your `PATH`. Check it with `zerobill version`.
+Repeat with a newer archive to update. The archive also includes the documentation
+and example config.
+
+### From source
+
+With [Go](https://go.dev/doc/install) installed:
 
 ```sh
 go install github.com/morhaf-ko/zerobill/cmd/zerobill@latest
 zerobill version
+```
+
+Ensure Go's binary directory (`go env GOBIN`, or `$(go env GOPATH)/bin` when empty)
+is on your `PATH`. Rerun the install command to update.
+
+## Try it
+
+After installing zerobill and the [GitHub CLI](https://cli.github.com/), run:
+
+```sh
 gh auth login --hostname github.com
 zerobill init
 zerobill status
