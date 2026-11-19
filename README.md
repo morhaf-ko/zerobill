@@ -149,7 +149,7 @@ owner: your-org
 # reserve_percent: 10
 # alert_remaining_percent: 20
 # check_interval: 5m
-# queue_timeout: 10m
+# queue_timeout: 2m
 # notify: https://ntfy.sh/your-topic
 ```
 

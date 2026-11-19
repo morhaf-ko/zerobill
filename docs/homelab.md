@@ -45,8 +45,8 @@ runners. GitHub reporting delays and the configured check interval affect detect
 
 ## Travel
 
-On the controller machine, before switching the runner machine off for a while, pause it so jobs go straight to the hosted
-tiers instead of waiting 10 minutes first:
+On the controller machine, pause the runner before switching it off. This lets jobs
+go straight to the hosted tiers without waiting for queue-stall detection:
 
 ```sh
 zerobill pause runner 14d
@@ -71,5 +71,5 @@ for each job. zerobill works with them; three settings make it work well:
   `owner` is an organization, on the repositories for a personal account.
 
 When the machine that runs your jobs is off, GARM removes its runners. The first job
-then waits longer than `queue_timeout` (default 10 minutes), zerobill moves `CI_RUNNER` to a free tier and reruns that job
+then waits longer than `queue_timeout` (default 2 minutes), zerobill moves `CI_RUNNER` to a free tier and reruns that job
 there, and later jobs go straight to the free tier until the machine is back.

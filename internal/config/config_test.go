@@ -34,8 +34,12 @@ func TestLoad(t *testing.T) {
 		return p
 	}
 	c, err := Load(write("owner: acme\nself_hosted_label: home-ci\nblacksmith: true\n"))
-	if err != nil || *c != (Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, ReservePercent: DefaultReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent, CheckInterval: DefaultCheckInterval, QueueTimeout: DefaultQueueTimeout}) {
+	if err != nil || *c != (Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, ReservePercent: DefaultReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent, CheckInterval: DefaultCheckInterval, QueueTimeout: 2 * time.Minute}) {
 		t.Fatalf("got %+v %v", c, err)
+	}
+	c, err = Load(write("owner: acme\nqueue_timeout: 7m\n"))
+	if err != nil || c.QueueTimeout != 7*time.Minute {
+		t.Fatalf("YAML override: got %+v %v, want queue timeout 7m", c, err)
 	}
 	for body, want := range map[string]string{
 		"self_hosted_label: home-ci\n":     "owner is required",
@@ -53,6 +57,7 @@ func TestLoad(t *testing.T) {
 }
 
 func TestFromEnv(t *testing.T) {
+	t.Setenv("ZEROBILL_QUEUE_TIMEOUT", "")
 	t.Setenv("ZEROBILL_RESERVE_PERCENT", "")
 	t.Setenv("ZEROBILL_OWNER", "")
 	if _, ok, err := FromEnv(); ok || err != nil {
@@ -63,8 +68,13 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv("ZEROBILL_BLACKSMITH", "true")
 	t.Setenv("ZEROBILL_NOTIFY", "https://ntfy.sh/x")
 	c, ok, err := FromEnv()
-	if !ok || err != nil || *c != (Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, Notify: "https://ntfy.sh/x", ReservePercent: DefaultReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent, CheckInterval: DefaultCheckInterval, QueueTimeout: DefaultQueueTimeout}) {
+	if !ok || err != nil || *c != (Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, Notify: "https://ntfy.sh/x", ReservePercent: DefaultReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent, CheckInterval: DefaultCheckInterval, QueueTimeout: 2 * time.Minute}) {
 		t.Fatalf("got %+v %v %v", c, ok, err)
+	}
+	t.Setenv("ZEROBILL_QUEUE_TIMEOUT", "7m")
+	c, ok, err = FromEnv()
+	if !ok || err != nil || c.QueueTimeout != 7*time.Minute {
+		t.Fatalf("environment override: got %+v %v %v, want queue timeout 7m", c, ok, err)
 	}
 	t.Setenv("ZEROBILL_BLACKSMITH", "yes")
 	if _, _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "use true or false") {
@@ -181,7 +191,7 @@ func TestCommentedConfigRoundTrip(t *testing.T) {
 		if full {
 			c.Owner = "owner: quoted"
 			c.SelfHostedLabel, c.Blacksmith = "home-ci", true
-			c.CheckInterval, c.QueueTimeout = time.Minute, 2*time.Minute
+			c.CheckInterval, c.QueueTimeout = time.Minute, 7*time.Minute
 			c.ReservePercent, c.AlertRemainingPercent = 0, 5
 			c.Notify = "https://ntfy.sh/topic#fragment"
 		}
