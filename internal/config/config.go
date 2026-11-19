@@ -20,7 +20,7 @@ const (
 	DefaultReservePercent        = 10
 	DefaultAlertRemainingPercent = 20
 	DefaultCheckInterval         = 5 * time.Minute
-	DefaultQueueTimeout          = 10 * time.Minute
+	DefaultQueueTimeout          = 2 * time.Minute
 	// WaitingLabel must never be assigned to a runner; it queues jobs without selecting paid capacity.
 	WaitingLabel = "zerobill-wait"
 )

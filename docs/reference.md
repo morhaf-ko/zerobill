@@ -21,7 +21,7 @@ existing configs untouched. It does not sign in to GitHub or change workflows.
 | `blacksmith` | `true` to use Blacksmith's free minutes too. |
 | `reserve_percent` | Percentage kept back from each free tier. Integer from 0 to 99; defaults to 10 when omitted. Zero uses the full allowance. |
 | `check_interval` | Availability and usage polling interval, default `5m`; accepts `1m` to `1h`. Restart the service after config changes. |
-| `queue_timeout` | Treat a self-hosted pool as unavailable once a job waits longer, default `10m`; accepts `1m` to `1h`. |
+| `queue_timeout` | Treat a self-hosted pool as unavailable once a job waits longer, default `2m`; accepts `1m` to `1h`. |
 | `alert_remaining_percent` | Warn at this percentage of each full hosted allowance remaining. Default 20; integer 0–99; 0 disables warnings. Choose a value above the reserve for advance notice. |
 | `notify` | A URL told whenever a variable's choice changes: an [ntfy](https://ntfy.sh/) topic, a Discord or Slack webhook, or anything that accepts a plain-text POST. Without `--apply` the message ends in `[log only]`, and every restart reports the first choice again, since nothing is saved. Routing-change send failures are logged and not retried. Low-capacity warnings are sent only with `--apply` and complete reads; successful warnings are saved once per provider, owner and UTC month. Failed low-capacity sends retry on the next successful check. Changing the threshold or webhook does not reset a sent warning. |
 
@@ -101,7 +101,7 @@ prove that a machine is online. An online observation and a successful job on th
 runner establish availability; a queue stall triggers the rules below.
 
 - A registered runner with your label is offline, or
-- a job has waited for the label longer than `queue_timeout` (default 10 minutes). Runners created per job, such as
+- a job has waited for the label longer than `queue_timeout` (default 2 minutes). Runners created per job, such as
   GARM or Actions Runner Controller pools, register only when a job arrives, so this is
   how zerobill notices they are gone. A pool that keeps idle runners, such as GARM with
   warm runners, then stays down until one is online again, so an outage costs one wait,

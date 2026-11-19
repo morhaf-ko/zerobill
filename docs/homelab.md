@@ -71,5 +71,5 @@ for each job. zerobill works with them; three settings make it work well:
   `owner` is an organization, on the repositories for a personal account.
 
 When the machine that runs your jobs is off, GARM removes its runners. The first job
-then waits longer than `queue_timeout` (default 10 minutes), zerobill moves `CI_RUNNER` to a free tier and reruns that job
+then waits longer than `queue_timeout` (default 2 minutes), zerobill moves `CI_RUNNER` to a free tier and reruns that job
 there, and later jobs go straight to the free tier until the machine is back.

@@ -18,7 +18,7 @@ owner: your-org
 # check_interval: 5m0s
 
 # Treat self-hosted capacity as unavailable after a job waits this long.
-# queue_timeout: 10m0s
+# queue_timeout: 2m0s
 
 # Optional routing-change and low-capacity alerts: ntfy, Discord or Slack webhook.
 # notify: https://ntfy.sh/your-topic
