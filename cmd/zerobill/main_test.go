@@ -559,17 +559,20 @@ func TestHostedOnlyExhaustionWaits(t *testing.T) {
 
 func TestConfiguredQueueTimeoutLatchesAndRecovers(t *testing.T) {
 	c, _ := newTestController(t, false)
-	c.a.cfg.QueueTimeout = 2 * time.Minute
+	c.a.cfg.QueueTimeout = 7 * time.Minute
 	c.a.cfg.CheckInterval = time.Minute
 	c.a.providers, c.a.routes = build(c.a.cfg, 2000)
-	stall := policy.State{OldestQueued: 3 * time.Minute}
-	if l := step(t, c, 0, result(stall)); l.Routes[0].Provider != "blacksmith" {
+	if l := step(t, c, 0, result(policy.State{OldestQueued: 3 * time.Minute})); l.Routes[0].Provider != "runner" {
+		t.Fatalf("queued job exceeded the default but is still within the override: %+v", l)
+	}
+	stall := policy.State{OldestQueued: 8 * time.Minute}
+	if l := step(t, c, time.Minute, result(stall)); l.Routes[0].Provider != "blacksmith" {
 		t.Fatalf("stall not detected: %+v", l)
 	}
-	if l := step(t, c, time.Minute, result(policy.State{})); l.Routes[0].Provider != "blacksmith" {
+	if l := step(t, c, 2*time.Minute, result(policy.State{})); l.Routes[0].Provider != "blacksmith" {
 		t.Fatalf("stall not remembered: %+v", l)
 	}
-	if l := step(t, c, 2*time.Minute, result(policy.State{Online: true})); l.Routes[0].Provider != "runner" || l.Routes[0].Held {
+	if l := step(t, c, 3*time.Minute, result(policy.State{Online: true})); l.Routes[0].Provider != "runner" || l.Routes[0].Held {
 		t.Fatalf("recovery held: %+v", l)
 	}
 }

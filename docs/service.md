@@ -160,6 +160,11 @@ docker compose pull
 docker compose up -d
 ```
 
+If your copied Compose file still uses `${ZEROBILL_QUEUE_TIMEOUT:-10m}`, change
+it to `${ZEROBILL_QUEUE_TIMEOUT:-}` before recreating the container. An empty value
+uses the image’s default. Set `ZEROBILL_QUEUE_TIMEOUT` in `.env` to keep a specific
+timeout across image upgrades.
+
 For rollback, restore the previous image tag and compatible `.env` settings, then
 run those two commands. Old images use `ZEROBILL_RUNNER`; the new config uses
 `ZEROBILL_SELF_HOSTED_LABEL`. To stop without removing state:
