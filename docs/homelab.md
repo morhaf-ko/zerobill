@@ -45,8 +45,8 @@ runners. GitHub reporting delays and the configured check interval affect detect
 
 ## Travel
 
-On the controller machine, before switching the runner machine off for a while, pause it so jobs go straight to the hosted
-tiers instead of waiting 10 minutes first:
+On the controller machine, pause the runner before switching it off. This lets jobs
+go straight to the hosted tiers without waiting for queue-stall detection:
 
 ```sh
 zerobill pause runner 14d
