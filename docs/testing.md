@@ -34,7 +34,7 @@ it into this isolated directory and rename `runner` to `self_hosted_label`.
 Read-only status and preview use your normal GitHub credential:
 
 ```sh
-go run ./cmd/zerobill status
+go run ./cmd/zerobill status --refresh
 go run ./cmd/zerobill run
 ```
 
@@ -65,7 +65,7 @@ Keep private repository names, credentials and job logs out of public evidence.
 Check this sequence with isolated controller config and state:
 
 1. Run `init`; verify defaults, file permissions and overwrite refusal.
-2. Run `status`; follow any access instructions and verify the expected owner,
+2. Run `status --refresh`; follow any access instructions and verify the expected owner,
    credential, private repository and self-hosted label.
 3. Run `run --apply` and inspect its log plus the actual `CI_RUNNER` variable.
    Dispatch the acceptance workflow; inspect GitHub's job record to confirm the
@@ -102,5 +102,5 @@ README and examples describe the release's supported config format. After taggin
 the published binary and container image. Follow [security](../SECURITY.md) for
 verification commands. A release candidate is not a published release or deployment.
 
-Immediate refresh, remote-client profiles and automatic hosted-outage failover are
+Remote-client profiles and automatic hosted-outage failover are
 outside this release's periodic-routing scope.

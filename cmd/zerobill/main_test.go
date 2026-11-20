@@ -592,3 +592,89 @@ func TestHealthUsesConfiguredInterval(t *testing.T) {
 		t.Fatalf("stalled loop considered healthy: %d", rec.Code)
 	}
 }
+
+func TestStatusWithoutCredentials(t *testing.T) {
+	t.Setenv("ZEROBILL_OWNER", "acme")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PATH", t.TempDir())
+	if err := status(nil); err != nil {
+		t.Fatalf("local status needs no GitHub credentials: %v", err)
+	}
+}
+
+func TestLocalStatusSnapshot(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Owner, cfg.Blacksmith = "acme", true
+	a := &app{cfg: &cfg, stateDir: t.TempDir()}
+	a.providers, _ = build(&cfg, 2000)
+	now := time.Date(2026, 11, 30, 23, 30, 0, 0, time.UTC)
+	repos := []discover.Repo{{Vars: []string{"CI_RUNNER"}}}
+	states := map[string]policy.State{"github": {UsedMinutes: 820}, "blacksmith": {UsedMinutes: 2280}}
+	applied := apply.State{Routes: map[string]policy.Applied{
+		"CI_RUNNER": {Owner: "other-owner", Label: "other-owner-runner"},
+	}}
+	if err := apply.SaveState(a.appliedPath(), applied); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&controller{a: a, repos: repos}).saveStatus(now, states, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, want, absent string
+		at                 time.Time
+	}{
+		{"fresh", "Blacksmith: 420 free min left", "BOT_RUNNER", now.Add(time.Minute)},
+		{"new month", "Blacksmith: unavailable", "free min left", now.Add(30 * time.Minute)},
+		{"stale", "Run zerobill status --refresh", "Would use", now.Add(20 * time.Minute)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := localStatus(&out, a, tt.at); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), tt.want) || strings.Contains(out.String(), tt.absent) ||
+				!strings.Contains(out.String(), "CI_RUNNER: no recorded assignment") || strings.Contains(out.String(), "other-owner-runner") {
+				t.Fatal(out.String())
+			}
+		})
+	}
+}
+
+func TestLocalStatusUsesFreshUsageAndControllerAssignments(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Owner = "acme"
+	a := &app{cfg: &cfg, stateDir: t.TempDir()}
+	a.providers, _ = build(&cfg, 2000)
+	now := time.Now().UTC()
+	repos := []discover.Repo{{Vars: []string{"CI_RUNNER"}}}
+	controller := a.snapshot(now, repos, map[string]policy.State{"github": {UsedMinutes: 800}})
+	controller.Incomplete = true
+	controller.Applied = map[string]policy.Applied{"CI_RUNNER": {Owner: cfg.Owner, Label: githubLabel}}
+	if err := saveStatus(a.statusPath(), controller); err != nil {
+		t.Fatal(err)
+	}
+	refresh := a.snapshot(now.Add(-time.Second), nil, map[string]policy.State{"github": {UsedMinutes: 600}})
+	for _, tt := range []struct {
+		at   time.Time
+		want string
+	}{
+		{now.Add(-time.Second), "1000 free min left"},
+		{now.Add(time.Second), "1200 free min left"},
+	} {
+		refresh.Checked = tt.at
+		if err := saveStatus(a.refreshPath(), refresh); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if err := localStatus(&out, a, now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{tt.want, "CI_RUNNER: " + githubLabel + " (last applied)", "last controller check reported problems"} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("missing %q in %s", want, out.String())
+			}
+		}
+	}
+}

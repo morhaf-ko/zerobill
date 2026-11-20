@@ -166,6 +166,7 @@ func reason(chosen string, skipped []string) string {
 
 // Applied is the label last written for a route.
 type Applied struct {
+	Owner    string    `json:"owner,omitempty"`
 	Provider string    `json:"provider"`
 	Label    string    `json:"label"`
 	Since    time.Time `json:"since"`

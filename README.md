@@ -85,7 +85,7 @@ After installing zerobill and the [GitHub CLI](https://cli.github.com/), run:
 ```sh
 gh auth login --hostname github.com
 zerobill init
-zerobill status
+zerobill status --refresh
 ```
 
 Init asks for your GitHub owner and optional providers. It creates a config with
@@ -111,8 +111,12 @@ Installing the CLI does not start a service. Keep that process running, or use t
 and authenticate on that machine; a laptop command does not control a VPS instance.
 Run only one applied controller per GitHub owner.
 
+Run `zerobill status` for the last applied runner and free minutes left. It reads
+local state without contacting GitHub. Use `zerobill status --refresh` for live
+usage and setup diagnostics.
+
 The first Blacksmith scan reads this month's job history and can take several
-minutes. CLI status prints progress; the controller's first routing log appears
+minutes. Live status prints progress; the controller's first routing log appears
 after the scan finishes. Preserve its state volume so later checks use the cache.
 
 ## Providers and access
@@ -125,7 +129,7 @@ after the scan finishes. Preserve its state volume so later checks use the cache
 
 The credential order is `GITHUB_TOKEN`, then `GH_TOKEN`, then the stored GitHub CLI
 login. An environment token overrides the account shown by `gh auth status`.
-`zerobill status` prints the selected source and next steps when access fails.
+`zerobill status --refresh` prints the selected source and next steps when access fails.
 Organization roles and available billing reports also matter; adding token scopes
 alone cannot fix every access problem. See [token permissions](SECURITY.md).
 

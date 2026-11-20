@@ -34,7 +34,8 @@ const usage = `zerobill keeps GitHub Actions jobs on free runners.
 
 usage:
   zerobill init                         create a config with guided prompts
-  zerobill [status]                     free minutes, current choices and problems
+  zerobill [status]                     saved free minutes and last applied runners
+  zerobill status --refresh             check live usage, access and workflow setup
   zerobill run [--apply] [--health :8080]
                                         keep CI_RUNNER on available free capacity;
                                         without --apply it
@@ -182,13 +183,13 @@ func githubToken(ctx context.Context) (string, error) {
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", errors.New("GitHub CLI credential lookup timed out. Check for a keychain prompt, then run gh auth status --hostname github.com before retrying zerobill status")
+		return "", errors.New("GitHub CLI credential lookup timed out. Check for a keychain prompt, then run gh auth status --hostname github.com before retrying zerobill status --refresh")
 	}
 	if errors.Is(err, exec.ErrNotFound) {
-		return "", errors.New("GitHub CLI is not installed. Install it from https://cli.github.com, then run:\n  gh auth login --hostname github.com\n  zerobill status\nFor token-based setup, see https://github.com/morhaf-ko/zerobill/blob/main/SECURITY.md")
+		return "", errors.New("GitHub CLI is not installed. Install it from https://cli.github.com, then run:\n  gh auth login --hostname github.com\n  zerobill status --refresh\nFor token-based setup, see https://github.com/morhaf-ko/zerobill/blob/main/SECURITY.md")
 	}
 	if err != nil || strings.TrimSpace(string(out)) == "" {
-		return "", errors.New("no GitHub login available. Run:\n  gh auth login --hostname github.com\n  zerobill status\nIf GH_TOKEN is set, it overrides the stored GitHub CLI login")
+		return "", errors.New("no GitHub login available. Run:\n  gh auth login --hostname github.com\n  zerobill status --refresh\nIf GH_TOKEN is set, it overrides the stored GitHub CLI login")
 	}
 	return strings.TrimSpace(string(out)), nil
 }

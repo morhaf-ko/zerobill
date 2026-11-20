@@ -20,7 +20,7 @@ func initConfig(args []string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	if _, err := os.Lstat(path); err == nil {
-		return fmt.Errorf("config already exists at %s; edit it to change settings.\nNext: zerobill status", path)
+		return fmt.Errorf("config already exists at %s; edit it to change settings.\nNext: zerobill status --refresh", path)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -78,6 +78,6 @@ func initConfig(args []string, in io.Reader, out io.Writer) error {
 	if c.Blacksmith {
 		fmt.Fprintln(out, "Make sure the Blacksmith GitHub App is installed for this owner: https://www.blacksmith.sh")
 	}
-	_, err = fmt.Fprintln(out, "Next: zerobill status\nStatus checks access and tells you which setup step is needed next.")
+	_, err = fmt.Fprintln(out, "Next: zerobill status --refresh\nStatus checks access and tells you which setup step is needed next.")
 	return err
 }

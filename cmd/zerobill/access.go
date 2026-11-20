@@ -22,7 +22,7 @@ func credentialSource() string {
 func accessSteps(source string, org bool) string {
 	if source == "GITHUB_TOKEN" || source == "GH_TOKEN" {
 		return source + " overrides your stored GitHub CLI login. To try that login for one command:\n" +
-			"  env -u GITHUB_TOKEN -u GH_TOKEN zerobill status\n" +
+			"  env -u GITHUB_TOKEN -u GH_TOKEN zerobill status --refresh\n" +
 			"To keep using a token, check its owner, repository selection and permissions:\n" +
 			"  https://github.com/morhaf-ko/zerobill/blob/main/SECURITY.md"
 	}
@@ -32,7 +32,7 @@ func accessSteps(source string, org bool) string {
 	}
 	help := "Authorize the GitHub CLI to read private repositories, runners and billing:\n" +
 		"  " + ghCommand(source) + " auth refresh --hostname github.com --scopes " + scopes + "\n" +
-		"Then check again:\n  zerobill status"
+		"Then check again:\n  zerobill status --refresh"
 	if org {
 		help += "\nOrganization billing and runner access also require the appropriate organization role."
 	}
@@ -41,18 +41,18 @@ func accessSteps(source string, org bool) string {
 
 func connectionProblem(action, source, owner string, org bool, err error) error {
 	if github.IsRateLimited(err) {
-		return fmt.Errorf("GitHub is rate limiting requests; wait until its rate limit resets before running zerobill status again.\nDetails: %w", err)
+		return fmt.Errorf("GitHub is rate limiting requests; wait until its rate limit resets before running zerobill status --refresh again.\nDetails: %w", err)
 	}
 	if github.IsAccessDenied(err) {
 		if se, ok := err.(*github.StatusError); ok && se.Code == 401 && source == "GitHub CLI" {
-			return fmt.Errorf("your GitHub CLI login was rejected. Sign in again:\n  %s auth login --hostname github.com\n  zerobill status\n\nDetails: %w", ghCommand(source), err)
+			return fmt.Errorf("your GitHub CLI login was rejected. Sign in again:\n  %s auth login --hostname github.com\n  zerobill status --refresh\n\nDetails: %w", ghCommand(source), err)
 		}
 		return fmt.Errorf("cannot %s using %s.\n\nNext: %s\n\nDetails: %w", action, source, accessSteps(source, org), err)
 	}
 	if github.IsNotFound(err) {
 		return fmt.Errorf("cannot find owner %s, or this credential cannot see it. Check owner in your config and the account shown by:\n  %s auth status --hostname github.com\n\nDetails: %w", owner, ghCommand(source), err)
 	}
-	return fmt.Errorf("could not %s using %s; check the connection and try zerobill status again.\nDetails: %w", action, source, err)
+	return fmt.Errorf("could not %s using %s; check the connection and try zerobill status --refresh again.\nDetails: %w", action, source, err)
 }
 
 func billingURL(owner string, org bool) string {

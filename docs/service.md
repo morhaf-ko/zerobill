@@ -44,7 +44,7 @@ Authenticate and configure on this machine:
 gh auth login --hostname github.com
 zerobill version
 zerobill init
-env -u GITHUB_TOKEN -u GH_TOKEN zerobill status
+env -u GITHUB_TOKEN -u GH_TOKEN zerobill status --refresh
 ```
 
 Follow status's access and workflow instructions. `GITHUB_TOKEN` and `GH_TOKEN`
@@ -86,7 +86,7 @@ Enabling linger can require administrator approval. Verify logs show `"apply":tr
 and no errors. Empty `written` arrays mean the variable already matched, not that
 routing failed. Use `journalctl --user -u zerobill.service -f` to follow checks.
 
-After changing config, run `zerobill status`, then restart the service. To update,
+After changing config, run `zerobill status --refresh`, then restart the service. To update,
 repeat the binary installation for the chosen release and restart. To roll back,
 install the previous binary and restore a config it supports before restarting;
 the old `runner` key became `self_hosted_label` in the new config format.
@@ -129,7 +129,7 @@ Validate without printing credentials, then check setup:
 
 ```sh
 docker compose config --quiet
-docker compose run --rm zerobill status
+docker compose run --rm zerobill status --refresh
 ```
 
 Follow the reported access and workflow instructions. Preview continuously:
@@ -188,10 +188,9 @@ docker compose exec zerobill zerobill pause runner 7d
 docker compose exec zerobill zerobill resume runner
 ```
 
-Pauses take effect on the next check. Status makes its own fresh reads; use service
-logs to confirm the running controller's last check and applied choices. Running a
-second `run --apply` process to force a check can race the first controller. Immediate
-refresh and a local CLI that connects to a remote server are not implemented.
+Pauses take effect on the next check. Status reads saved usage and applied choices
+from the service's state directory. Use `zerobill status --refresh` on the service
+machine for live diagnostics, and the service logs to check for routing errors.
 
 The default check interval is 5 minutes, configurable down to 1 minute. The 15-minute
 hosted-routing hold and optional `/healthz` endpoint are separate from runner polling;
