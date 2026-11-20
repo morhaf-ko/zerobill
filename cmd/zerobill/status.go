@@ -1,16 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/morhaf-ko/zerobill/internal/apply"
+	"github.com/morhaf-ko/zerobill/internal/atomicfile"
 	"github.com/morhaf-ko/zerobill/internal/collect"
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/discover"
@@ -20,8 +23,15 @@ import (
 var errStatusIncomplete = errors.New("status incomplete")
 
 func status(args []string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("unknown argument %q; status takes none", args[0])
+	if len(args) == 0 {
+		a, err := load(false, nil)
+		if err != nil {
+			return err
+		}
+		return localStatus(os.Stdout, a, time.Now().UTC())
+	}
+	if len(args) != 1 || args[0] != "--refresh" {
+		return errors.New("usage: zerobill status [--refresh]")
 	}
 	progress := statusProgress(os.Stderr)
 	progress("")
@@ -31,6 +41,166 @@ func status(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "GitHub: %s via %s; owner: %s.\n", a.login, a.authSource, a.cfg.Owner)
 	return reportStatus(os.Stdout, a)
+}
+
+type statusSnapshot struct {
+	Owner           string                    `json:"owner"`
+	Checked         time.Time                 `json:"checked"`
+	SelfHostedLabel string                    `json:"self_hosted_label,omitempty"`
+	GitHubMinutes   float64                   `json:"github_minutes"`
+	States          map[string]policy.State   `json:"states"`
+	Applied         map[string]policy.Applied `json:"applied,omitempty"`
+	UsesCI          bool                      `json:"uses_ci,omitempty"`
+	UsesBot         bool                      `json:"uses_bot,omitempty"`
+	DiscoveryFailed bool                      `json:"discovery_failed,omitempty"`
+	Incomplete      bool                      `json:"incomplete,omitempty"`
+}
+
+func (a *app) statusPath() string  { return filepath.Join(a.stateDir, "status.json") }
+func (a *app) refreshPath() string { return filepath.Join(a.stateDir, "status-refresh.json") }
+
+func (a *app) snapshot(checked time.Time, repos []discover.Repo, states map[string]policy.State) statusSnapshot {
+	s := statusSnapshot{Owner: a.cfg.Owner, Checked: checked, SelfHostedLabel: a.cfg.SelfHostedLabel, States: states}
+	for _, p := range a.providers {
+		if p.Name == "github" {
+			s.GitHubMinutes = p.Monthly
+		}
+	}
+	for _, repo := range repos {
+		s.UsesCI = s.UsesCI || reads(repo, "CI_RUNNER")
+		s.UsesBot = s.UsesBot || reads(repo, "BOT_RUNNER")
+	}
+	return s
+}
+
+func saveStatus(path string, s statusSnapshot) error {
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(path, raw)
+}
+
+func (c *controller) saveStatus(checked time.Time, states map[string]policy.State, incomplete bool) error {
+	s := c.a.snapshot(checked, c.repos, states)
+	s.DiscoveryFailed = c.discoverErr != "" || len(c.workflowErrors) > 0
+	s.Incomplete = incomplete || s.DiscoveryFailed
+	st, err := apply.LoadState(c.a.appliedPath())
+	if err != nil {
+		return err
+	}
+	for variable, route := range st.Routes {
+		if strings.EqualFold(route.Owner, s.Owner) {
+			if s.Applied == nil {
+				s.Applied = make(map[string]policy.Applied)
+			}
+			s.Applied[variable] = route
+		}
+	}
+	return saveStatus(c.a.statusPath(), s)
+}
+
+func loadStatus(path, owner string) (statusSnapshot, error) {
+	var s statusSnapshot
+	raw, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return s, nil
+	case err != nil:
+		return s, err
+	default:
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return statusSnapshot{}, fmt.Errorf("read saved status: %w", err)
+		}
+	}
+	if !strings.EqualFold(s.Owner, owner) {
+		return statusSnapshot{}, nil
+	}
+	return s, nil
+}
+
+func localStatus(w io.Writer, a *app, now time.Time) error {
+	s, controllerErr := loadStatus(a.statusPath(), a.cfg.Owner)
+	refresh, refreshErr := loadStatus(a.refreshPath(), a.cfg.Owner)
+	coverageChecked := s.Checked
+	switch {
+	case controllerErr != nil:
+		if refresh.Checked.IsZero() || refreshErr != nil {
+			return controllerErr
+		}
+		fmt.Fprintln(w, "Controller assignments unavailable. Check the controller logs.")
+		s = refresh
+	case s.Checked.IsZero():
+		if refreshErr != nil {
+			return refreshErr
+		}
+		s = refresh
+		coverageChecked = refresh.Checked
+	case refresh.Checked.After(s.Checked) && refreshErr == nil:
+		s.Checked, s.States = refresh.Checked, refresh.States
+		s.GitHubMinutes, s.SelfHostedLabel = refresh.GitHubMinutes, refresh.SelfHostedLabel
+	}
+	if s.Checked.IsZero() {
+		fmt.Fprintln(w, "No saved check for this owner. Run zerobill status --refresh.")
+		return nil
+	}
+	providers, routes := build(a.cfg, s.GitHubMinutes)
+	if s.SelfHostedLabel != a.cfg.SelfHostedLabel {
+		delete(s.States, "runner")
+	}
+	currentMonth := s.Checked.UTC().Format("2006-01") == now.Format("2006-01")
+	age := max(now.Sub(s.Checked).Round(time.Second), 0)
+	fresh := currentMonth && age <= 3*a.cfg.CheckInterval
+	complete := !s.Incomplete
+	for _, p := range providers {
+		_, ok := s.States[p.Name]
+		complete = complete && ok
+	}
+	for _, rt := range routes {
+		if rt.Variable == "CI_RUNNER" && !s.UsesCI || rt.Variable == "BOT_RUNNER" && !s.UsesBot {
+			continue
+		}
+		applied := s.Applied[rt.Variable]
+		if applied.Label == "" {
+			fmt.Fprintf(w, "%s: no recorded assignment\n", rt.Variable)
+		} else {
+			fmt.Fprintf(w, "%s: %s (last applied)\n", rt.Variable, applied.Label)
+		}
+		if fresh && complete && now.Sub(coverageChecked) <= 3*a.cfg.CheckInterval {
+			d, _ := policy.Hold(policy.Decide(rt, s.States), applied, rt, s.States, s.Checked)
+			if d.Label != applied.Label {
+				fmt.Fprintf(w, "  Would use %s (%s)\n", d.Label, d.Reason)
+			}
+		}
+	}
+	if s.DiscoveryFailed {
+		fmt.Fprintln(w, "Workflow discovery was incomplete.")
+	} else if !s.UsesCI && !s.UsesBot {
+		fmt.Fprintln(w, "No connected workflows in the last check.")
+	}
+	labels := map[string]string{"runner": "Self-hosted", "blacksmith": "Blacksmith", "github": "GitHub Actions"}
+	for _, p := range providers {
+		state, ok := s.States[p.Name]
+		value := "unavailable"
+		switch {
+		case ok && p.Kind == policy.SelfHosted:
+			_, value = policy.Usable(p, state)
+		case ok && currentMonth:
+			value = fmt.Sprintf("%.0f free min left", max(p.Limit()-state.UsedMinutes, 0))
+			if state.Paused != "" {
+				value += " (" + state.Paused + ")"
+			}
+		}
+		fmt.Fprintf(w, "%s: %s\n", labels[p.Name], value)
+	}
+	fmt.Fprintf(w, "Usage checked %s ago. Free minutes exclude your %d%% reserve.\n", age, a.cfg.ReservePercent)
+	if s.Incomplete {
+		fmt.Fprintln(w, "The last controller check reported problems. See its logs.")
+	}
+	if !fresh || !complete || !s.UsesCI && !s.UsesBot {
+		fmt.Fprintln(w, "Run zerobill status --refresh for live usage and setup checks.")
+	}
+	return nil
 }
 
 func reportStatus(w io.Writer, a *app) error {
@@ -49,7 +219,13 @@ func reportStatus(w io.Writer, a *app) error {
 	now := time.Now().UTC()
 	r := statusObservations(a, os.Stderr)
 	states := adjust(a, &st, now, r.States, r.Errors)
-	return render(w, now, a, st.Routes, states, found, r)
+	if err := render(w, now, a, st.Routes, states, found, r); err != nil {
+		return err
+	}
+	if err := saveStatus(a.refreshPath(), a.snapshot(now, found.Repos, states)); err != nil {
+		return fmt.Errorf("save status: %w", err)
+	}
+	return nil
 }
 
 // render prints each provider's budget, each variable's choice and anything that
@@ -189,7 +365,7 @@ func renderIncomplete(w io.Writer, a *app, found discover.Result, result collect
 	fmt.Fprintln(w, "\nNext:")
 	switch {
 	case result.RateLimited:
-		fmt.Fprintln(w, "GitHub is rate limiting requests. Wait until its rate limit resets (at least a minute for secondary limits), then run:\n  zerobill status")
+		fmt.Fprintln(w, "GitHub is rate limiting requests. Wait until its rate limit resets (at least a minute for secondary limits), then run:\n  zerobill status --refresh")
 	case result.AccessProblem:
 		fmt.Fprintln(w, accessSteps(a.authSource, a.org))
 	case found.PrivateRepos == 0 && len(found.Repos) == 0:
@@ -200,10 +376,10 @@ func renderIncomplete(w io.Writer, a *app, found discover.Result, result collect
 			fmt.Fprintf(w, "If repositories are missing, check access with:\n  %s auth status --hostname github.com\n", ghCommand(a.authSource))
 		}
 	case len(found.Errors) > 0:
-		fmt.Fprintln(w, "Check the workflow errors below, then run:\n  zerobill status")
+		fmt.Fprintln(w, "Check the workflow errors below, then run:\n  zerobill status --refresh")
 	case errs["pause"] != "":
 		fmt.Fprintf(w, "Check the local pause state:\n  ls -ld -- %s\n", shellQuote(a.pausePath()))
-		fmt.Fprintln(w, "It must be a readable file, not a directory. Fix it before retrying:\n  zerobill status")
+		fmt.Fprintln(w, "It must be a readable file, not a directory. Fix it before retrying:\n  zerobill status --refresh")
 	case len(errs) > 0:
 		if errs["github"] != "" {
 			if a.authSource == "GITHUB_TOKEN" || a.authSource == "GH_TOKEN" {
@@ -212,7 +388,7 @@ func renderIncomplete(w io.Writer, a *app, found discover.Result, result collect
 			fmt.Fprintf(w, "Check billing access as the account owner or organization administrator:\n  %s\n", billingURL(a.cfg.Owner, a.org))
 			fmt.Fprintln(w, "The billing API may be unavailable for this account; refreshing scopes alone may not fix it.")
 		}
-		fmt.Fprintln(w, "Check the API errors below and retry when the service is available:\n  zerobill status")
+		fmt.Fprintln(w, "Check the API errors below and retry when the service is available:\n  zerobill status --refresh")
 	default:
 		workflowSteps(w, found, a.authSource)
 	}
@@ -238,7 +414,7 @@ func workflowSteps(w io.Writer, found discover.Result, source string) {
 	} else {
 		fmt.Fprintln(w, "In each private repository you want to route, create CI_RUNNER with an initial value of zerobill-wait.")
 	}
-	fmt.Fprintln(w, "Then set the workflow's runner to:\n  runs-on: ${{ vars.CI_RUNNER }}\nCheck again:\n  zerobill status\nzerobill-wait queues jobs without selecting paid capacity; never assign it to a runner.\nAfter run --apply selects capacity, cancel and rerun jobs already queued on zerobill-wait.")
+	fmt.Fprintln(w, "Then set the workflow's runner to:\n  runs-on: ${{ vars.CI_RUNNER }}\nCheck again:\n  zerobill status --refresh\nzerobill-wait queues jobs without selecting paid capacity; never assign it to a runner.\nAfter run --apply selects capacity, cancel and rerun jobs already queued on zerobill-wait.")
 }
 
 // Check inexpensive reads before starting the cold monthly job scan.

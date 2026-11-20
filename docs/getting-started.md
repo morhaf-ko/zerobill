@@ -16,7 +16,7 @@ and install the [GitHub CLI](https://cli.github.com/). Then run:
 zerobill version
 gh auth login --hostname github.com
 zerobill init
-zerobill status
+zerobill status --refresh
 ```
 
 Enter the GitHub user or organization that owns the repository. Leave the
@@ -29,7 +29,7 @@ Check the account and credential source printed by status. The order is
 without environment tokens for one command:
 
 ```sh
-env -u GITHUB_TOKEN -u GH_TOKEN zerobill status
+env -u GITHUB_TOKEN -u GH_TOKEN zerobill status --refresh
 ```
 
 If you keep that credential choice, use the same prefix on subsequent zerobill
@@ -74,7 +74,7 @@ with `${{ vars.CI_RUNNER }}`. Review that change through your normal PR process.
 Repositories whose workflows do not read the routing variables, and fixed-label
 jobs, remain outside routing.
 
-Run `zerobill status` again. Once setup and reads succeed, it reports the connected
+Run `zerobill status --refresh` again. Once setup and reads succeed, it reports the connected
 repository and a recommended label. Use only `CI_RUNNER` for the default policy;
 `BOT_RUNNER` is an optional hosted-first policy for a separate use case.
 
@@ -163,7 +163,7 @@ A hosted test can be billed; check free capacity and provider spending limits fi
 | First scan has no routing log yet | Allow the initial monthly scan to finish; preserve state instead of repeatedly restarting |
 | A label is selected but a job is queued | Check GitHub's runner list and job labels; an empty pool may be treated as on-demand |
 | A variable changed but an old job still waits | Inspect that run's original labels; dispatch a fresh manual test |
-| Local status differs from the VPS | Inspect the deployed controller's config and logs; local status makes separate API reads |
+| Local status differs from the VPS | Inspect the deployed controller's config and logs; local status reads the local snapshot |
 | A provider cannot be read | Repair the reported access or API failure; failed reads leave existing variables unchanged |
 
 ## Stop or roll back

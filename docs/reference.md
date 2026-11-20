@@ -34,17 +34,18 @@ Rename old `runner` / `ZEROBILL_RUNNER` settings to `self_hosted_label` /
 `ZEROBILL_SELF_HOSTED_LABEL`. Old names fail with an explicit migration message.
 
 State lives in `~/.local/state/zerobill` (`$XDG_STATE_HOME/zerobill`): a cache of this
-month's jobs, the last decision per variable, and pauses.
+month's jobs, the latest status snapshot, the last applied decision per variable,
+and pauses.
 
 ## Access
 
 zerobill uses `GITHUB_TOKEN`, then `GH_TOKEN`, then the stored GitHub CLI login
-(`gh auth token`). Status displays the source and authenticated account. Environment
+(`gh auth token`). `status --refresh` displays the source and authenticated account. Environment
 tokens take precedence over the stored login. Reading runners and billing needs `gh auth refresh -s admin:org` for
 an organization, or `-s user` for a personal account. A personal account must be the
 signed-in user. For a narrower token, see [security](../SECURITY.md).
 
-`status` exits with 1 when reads fail, no private repositories are visible, or no
+`status --refresh` exits with 1 when reads fail, no private repositories are visible, or no
 workflow uses the routing variables. It prints recovery commands and withholds
 usage estimates and recommendations. A billing 404 can mean missing access or an
 unavailable billing report; adding scopes is not a guaranteed fix.
@@ -184,12 +185,17 @@ Commands read the config, credential and state on the machine where they execute
 A laptop command does not control an instance on your VPS. Run commands there over
 SSH, or use `docker compose exec zerobill zerobill status` and
 `docker compose exec zerobill zerobill pause runner 7d` in its Compose directory.
-`status` performs fresh reads and reports recommendations; it does not prove the
-background controller is running or that a recommendation was applied. Check its
-logs for the latest completed check and writes.
+`status` reads the local snapshot without GitHub credentials. It shows the last
+recorded assignment, remaining free minutes after the reserve, and the age of the
+check. After upgrading, an applied controller check records assignments for
+the configured owner. A check older than three check intervals is stale. Minutes from a previous
+UTC month are unavailable. `status --refresh` performs live reads and reports setup
+and access details. A successful refresh can update displayed usage while the
+applied controller supplies assignments and workflow coverage. Check controller logs for write
+errors or recovery details.
 
-Immediate refresh and remote-client profiles are not implemented. A pause is read
-on the next check; configuration changes require restarting the controller.
+A pause is read on the next check. Configuration changes require restarting the
+controller.
 
 `run --apply --health :8080` optionally serves `/healthz`. It answers `200` while its
 loop started or finished a check in the last `max(15m, 3 × check_interval)` and `503`

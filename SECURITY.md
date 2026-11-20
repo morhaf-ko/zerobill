@@ -3,7 +3,8 @@
 Report vulnerabilities through [GitHub private vulnerability reporting](https://github.com/morhaf-ko/zerobill/security/advisories/new). Do not put tokens, private repository names or run logs from your own installation in a public issue. Use public issues for defects whose reproduction contains no private data.
 
 zerobill uses `GITHUB_TOKEN`, then `GH_TOKEN`, then your stored GitHub CLI login.
-Environment tokens override the stored login; status shows the selected source and account.
+Environment tokens override the stored login. `zerobill status --refresh` shows
+the selected source and account.
 No Blacksmith API key is used. With `run --apply` it writes the `CI_RUNNER` and `BOT_RUNNER` repository variables and cancels and reruns workflow runs.
 
 Applied recovery can force-cancel an owned cancellation after five minutes only

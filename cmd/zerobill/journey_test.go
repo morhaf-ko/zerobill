@@ -118,6 +118,24 @@ func TestSetupToRoutingJourney(t *testing.T) {
 	if err := reportStatus(&report, a); err != nil || !strings.Contains(report.String(), "CI_RUNNER  home-ci") {
 		t.Fatalf("setup report: %v\n%s", err, report.String())
 	}
+	var summary bytes.Buffer
+	if err := localStatus(&summary, a, time.Now().UTC()); err != nil || !strings.Contains(summary.String(), "GitHub Actions:") {
+		t.Fatalf("refresh did not save local status: %v\n%s", err, summary.String())
+	}
+	if err := os.Remove(a.refreshPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(a.refreshPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	report.Reset()
+	if err := reportStatus(&report, a); err == nil || !strings.Contains(err.Error(), "save status") ||
+		!strings.Contains(report.String(), "CI_RUNNER  home-ci") {
+		t.Fatalf("live results with blocked snapshot: %v\n%s", err, report.String())
+	}
+	if err := os.Remove(a.refreshPath()); err != nil {
+		t.Fatal(err)
+	}
 	start := func(write bool) *controller {
 		t.Helper()
 		c, err := newController(a, write)
@@ -129,6 +147,9 @@ func TestSetupToRoutingJourney(t *testing.T) {
 	}
 	c := start(false)
 	step(t, c, 0, a.col.Observe(a.providers))
+	if _, err := os.Stat(a.statusPath()); !os.IsNotExist(err) {
+		t.Fatalf("preview wrote a controller snapshot: %v", err)
+	}
 	if writes != 0 || warnings != 0 {
 		t.Fatal("preview wrote routing or delivered capacity warnings")
 	}
@@ -136,6 +157,10 @@ func TestSetupToRoutingJourney(t *testing.T) {
 	check := func(at time.Duration, want string) {
 		t.Helper()
 		l := step(t, c, at, a.col.Observe(a.providers))
+		summary.Reset()
+		if err := localStatus(&summary, a, now.Add(at)); err != nil || !strings.Contains(summary.String(), "CI_RUNNER: "+want+" (last applied)") {
+			t.Fatalf("local status after controller check: %v\n%s", err, summary.String())
+		}
 		if len(l.Errors) != 0 || vars.values["acme/sandbox/CI_RUNNER"] != want {
 			t.Fatalf("at %s: %+v variables %v", at, l, vars.values)
 		}

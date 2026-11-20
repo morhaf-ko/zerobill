@@ -72,6 +72,7 @@ func run(args []string) error {
 		if time.Since(foundAt) >= rediscover {
 			found, err := discover.Discover(a.gh, a.cfg.Owner, a.org)
 			c.discoverErr = ""
+			c.workflowErrors = found.Errors
 			if err != nil {
 				c.discoverErr = err.Error()
 			} else {
@@ -127,12 +128,13 @@ func names(repos []discover.Repo) []string {
 
 // controller decides each interval and, with apply set, writes the decision.
 type controller struct {
-	a           *app
-	apply       bool
-	writer      *apply.Writer
-	state       apply.State
-	repos       []discover.Repo
-	discoverErr string
+	a              *app
+	apply          bool
+	writer         *apply.Writer
+	state          apply.State
+	repos          []discover.Repo
+	discoverErr    string
+	workflowErrors []string
 }
 
 func newController(a *app, write bool) (*controller, error) {
@@ -250,9 +252,15 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 				}
 			}
 		}
-		if took && (d.Label != applied.Label || d.Provider != applied.Provider) {
-			c.state.Routes[rt.Variable] = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
-			changes = append(changes, fmt.Sprintf("%s → %s (%s)", rt.Variable, d.Label, d.Reason))
+		if took {
+			if d.Label != applied.Label || d.Provider != applied.Provider {
+				applied = policy.Applied{Provider: d.Provider, Label: d.Label, Since: now}
+				changes = append(changes, fmt.Sprintf("%s → %s (%s)", rt.Variable, d.Label, d.Reason))
+			}
+			if write {
+				applied.Owner = c.a.cfg.Owner
+			}
+			c.state.Routes[rt.Variable] = applied
 		}
 		l.Routes = append(l.Routes, rl)
 	}
@@ -321,6 +329,14 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	if write {
 		if err := apply.SaveState(c.a.appliedPath(), c.state); err != nil {
 			l.Errors["state"] = err.Error()
+		}
+	}
+	if len(c.workflowErrors) > 0 {
+		l.Errors["workflows"] = strings.Join(c.workflowErrors, "; ")
+	}
+	if c.apply {
+		if err := c.saveStatus(now, states, len(l.Errors) > 0 || len(l.Recovery) > 0); err != nil {
+			l.Errors["status"] = err.Error()
 		}
 	}
 	if len(l.Errors) == 0 {
