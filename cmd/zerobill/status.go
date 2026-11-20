@@ -110,7 +110,7 @@ func loadStatus(path, owner string) (statusSnapshot, error) {
 		return s, err
 	default:
 		if err := json.Unmarshal(raw, &s); err != nil {
-			return s, fmt.Errorf("read saved status: %w", err)
+			return statusSnapshot{}, fmt.Errorf("read saved status: %w", err)
 		}
 	}
 	if !strings.EqualFold(s.Owner, owner) {
@@ -120,18 +120,23 @@ func loadStatus(path, owner string) (statusSnapshot, error) {
 }
 
 func localStatus(w io.Writer, a *app, now time.Time) error {
-	s, err := loadStatus(a.statusPath(), a.cfg.Owner)
-	if err != nil {
-		return err
-	}
-	refresh, err := loadStatus(a.refreshPath(), a.cfg.Owner)
+	s, controllerErr := loadStatus(a.statusPath(), a.cfg.Owner)
+	refresh, refreshErr := loadStatus(a.refreshPath(), a.cfg.Owner)
+	coverageChecked := s.Checked
 	switch {
+	case controllerErr != nil:
+		if refresh.Checked.IsZero() || refreshErr != nil {
+			return controllerErr
+		}
+		fmt.Fprintln(w, "Controller assignments unavailable. Check the controller logs.")
+		s = refresh
 	case s.Checked.IsZero():
-		if err != nil {
-			return err
+		if refreshErr != nil {
+			return refreshErr
 		}
 		s = refresh
-	case refresh.Checked.After(s.Checked) && err == nil:
+		coverageChecked = refresh.Checked
+	case refresh.Checked.After(s.Checked) && refreshErr == nil:
 		s.Checked, s.States = refresh.Checked, refresh.States
 		s.GitHubMinutes, s.SelfHostedLabel = refresh.GitHubMinutes, refresh.SelfHostedLabel
 	}
@@ -161,7 +166,7 @@ func localStatus(w io.Writer, a *app, now time.Time) error {
 		} else {
 			fmt.Fprintf(w, "%s: %s (last applied)\n", rt.Variable, applied.Label)
 		}
-		if fresh && complete {
+		if fresh && complete && now.Sub(coverageChecked) <= 3*a.cfg.CheckInterval {
 			d, _ := policy.Hold(policy.Decide(rt, s.States), applied, rt, s.States, s.Checked)
 			if d.Label != applied.Label {
 				fmt.Fprintf(w, "  Would use %s (%s)\n", d.Label, d.Reason)

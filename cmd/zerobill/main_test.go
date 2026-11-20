@@ -677,4 +677,34 @@ func TestLocalStatusUsesFreshUsageAndControllerAssignments(t *testing.T) {
 			}
 		}
 	}
+	controller.Checked = now.Add(-4 * cfg.CheckInterval)
+	controller.Incomplete = false
+	controller.Applied = nil
+	if err := saveStatus(a.statusPath(), controller); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := localStatus(&out, a, now.Add(time.Second)); err != nil || strings.Contains(out.String(), "Would use") {
+		t.Fatalf("recommendation with stale controller coverage: %v\n%s", err, out.String())
+	}
+}
+
+func TestLocalStatusFallsBackAfterControllerSnapshotError(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Owner = "acme"
+	a := &app{cfg: &cfg, stateDir: t.TempDir()}
+	a.providers, _ = build(&cfg, 2000)
+	now := time.Now().UTC()
+	if err := os.WriteFile(a.statusPath(), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refresh := a.snapshot(now, nil, map[string]policy.State{"github": {UsedMinutes: 600}})
+	if err := saveStatus(a.refreshPath(), refresh); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := localStatus(&out, a, now); err != nil || !strings.Contains(out.String(), "1200 free min left") ||
+		!strings.Contains(out.String(), "Controller assignments unavailable") {
+		t.Fatalf("refresh fallback: %v\n%s", err, out.String())
+	}
 }
