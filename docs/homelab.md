@@ -52,7 +52,14 @@ go straight to the hosted tiers without waiting for queue-stall detection:
 zerobill pause runner 14d
 ```
 
-`zerobill resume runner` brings it back early.
+Wait for a successful applied check on that controller. Inspect `paused.runner`
+and the route in its JSON log, then verify the repository's actual runner variable.
+If hosted free capacity is at its reserve, jobs can still wait for the self-hosted
+label. Use the [private acceptance workflow](testing.md#private-repository-acceptance)
+if you need proof that GitHub can assign and start a job on the selected route.
+
+`zerobill resume runner` brings it back early. Verify the next successful applied
+check before relying on self-hosted capacity.
 
 ## Runners created per job, such as GARM
 
@@ -71,5 +78,10 @@ for each job. zerobill works with them; three settings make it work well:
   `owner` is an organization, on the repositories for a personal account.
 
 When the machine that runs your jobs is off, GARM removes its runners. The first job
-then waits longer than `queue_timeout` (default 2 minutes), zerobill moves `CI_RUNNER` to a free tier and reruns that job
-there, and later jobs go straight to the free tier until the machine is back.
+can wait longer than `queue_timeout` (default 2 minutes). When an eligible hosted
+tier has free capacity, zerobill can move `CI_RUNNER` and recover a queued job that
+passes the [recovery guards](reference.md#what-run---apply-does). Later jobs read
+the new label. Compare cold-start time with `queue_timeout`, and check the runner
+inventory for busy runners or extra labels. On organizations, check the runner
+group's allowed repositories and workflows in GitHub. Check run status and
+environment approvals before treating a GitHub wait as a pool outage.

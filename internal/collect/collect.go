@@ -43,6 +43,12 @@ type Result struct {
 	// Movable lists, per self-hosted provider, runs with a job queued on its label
 	// that can be cancelled and rerun without stopping a started job.
 	Movable map[string][]Run
+	Queues  map[string]QueueDiagnostics
+}
+
+type QueueDiagnostics struct {
+	Pool   string         `json:"pool"`
+	Causes map[string]int `json:"causes,omitempty"`
 }
 
 // Run identifies one attempt of a workflow run.
@@ -56,14 +62,18 @@ type Run struct {
 // Observe collects state for each provider. A failed provider is reported in
 // Result.Errors and left out of Result.States, so the policy skips it.
 func (c *Collector) Observe(providers []policy.Provider) Result {
-	r := Result{States: map[string]policy.State{}, Errors: map[string]string{}, Movable: map[string][]Run{}}
+	r := Result{States: map[string]policy.State{}, Errors: map[string]string{}, Movable: map[string][]Run{}, Queues: map[string]QueueDiagnostics{}}
 	for _, p := range providers {
 		var s policy.State
 		var err error
 		switch p.Name {
 		case "runner":
 			var movable []Run
-			s, movable, err = c.selfHosted(p.Label)
+			var diagnostic QueueDiagnostics
+			s, movable, diagnostic, err = c.selfHosted(p.Label, p.QueueTimeout)
+			if err == nil {
+				r.Queues[p.Name] = diagnostic
+			}
 			if len(movable) > 0 {
 				r.Movable[p.Name] = movable
 			}
@@ -117,9 +127,10 @@ type runnerLabel struct {
 }
 
 type workflowRun struct {
-	ID         int64  `json:"id"`
-	RunAttempt int    `json:"run_attempt"`
-	Status     string `json:"status"`
+	ID         int64     `json:"id"`
+	RunAttempt int       `json:"run_attempt"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type job struct {
@@ -133,23 +144,28 @@ type job struct {
 	// RunnerName is empty for a job that never reached a runner, such as one
 	// cancelled while queued; its started_at still records queue time.
 	RunnerName string `json:"runner_name"`
+	RunnerID   int64  `json:"runner_id"`
+	GroupID    int64  `json:"runner_group_id"`
+	RunAttempt int    `json:"run_attempt"`
 }
 
 // selfHosted reads whether runners carry label and are online, and the age of the
 // oldest job queued on it. It also returns the runs that can move off the label:
 // every queued job is on it, no job is running, and no completed job failed or
 // was cancelled, so rerunning failed jobs reruns only what zerobill cancelled.
-func (c *Collector) selfHosted(label string) (policy.State, []Run, error) {
-	paths := []string{"/orgs/" + url.PathEscape(c.Owner) + "/actions/runners?per_page=100"}
-	if !c.Org {
-		paths = paths[:0]
-		for _, repo := range c.Repositories {
-			paths = append(paths, "/repos/"+repo+"/actions/runners?per_page=100")
-		}
+func (c *Collector) selfHosted(label string, timeout time.Duration) (policy.State, []Run, QueueDiagnostics, error) {
+	if timeout == 0 {
+		timeout = policy.MaxQueueWait
 	}
+	owners := c.Repositories
+	base := "/repos/"
+	if c.Org {
+		owners, base = []string{url.PathEscape(c.Owner)}, "/orgs/"
+	}
+	inventory := map[string][]runner{}
 	var s policy.State
-	for _, path := range paths {
-		err := c.GH.Paginate(path, func(body []byte) error {
+	for _, owner := range owners {
+		err := c.GH.Paginate(base+owner+"/actions/runners?per_page=100", func(body []byte) error {
 			var page struct {
 				Runners []runner `json:"runners"`
 			}
@@ -157,7 +173,8 @@ func (c *Collector) selfHosted(label string) (policy.State, []Run, error) {
 				return err
 			}
 			for _, r := range page.Runners {
-				if slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return l.Name == label }) {
+				if hasLabel(r, label) {
+					inventory[owner] = append(inventory[owner], r)
 					s.Registered = true
 					s.Online = s.Online || r.Status == "online"
 					s.Idle = s.Idle || (r.Status == "online" && !r.Busy)
@@ -166,39 +183,73 @@ func (c *Collector) selfHosted(label string) (policy.State, []Run, error) {
 			return nil
 		})
 		if err != nil {
-			return policy.State{}, nil, err
+			return policy.State{}, nil, QueueDiagnostics{}, err
 		}
+	}
+
+	diagnostic := QueueDiagnostics{Causes: map[string]int{}}
+	switch {
+	case s.Idle:
+		diagnostic.Pool = "matching runner online and idle"
+	case s.Online:
+		diagnostic.Pool = "matching online runners busy"
+	case s.Registered:
+		diagnostic.Pool = "matching runners registered but none online"
+	default:
+		diagnostic.Pool = "no matching runner registered"
 	}
 
 	var movable []Run
 	now := c.now()
 	for _, repo := range c.Repositories {
+		runners := inventory[repo]
+		if c.Org {
+			runners = inventory[url.PathEscape(c.Owner)]
+		}
 		seen := map[int64]bool{}
-		// Later jobs of a running workflow queue too, so in-progress runs are scanned.
-		// Runs that are waiting, requested or pending hold no runner-queued jobs.
 		for _, status := range []string{"queued", "in_progress"} {
 			runs, err := c.runs("/repos/" + repo + "/actions/runs?status=" + status + "&per_page=100")
 			if err != nil {
-				return policy.State{}, nil, err
+				return policy.State{}, nil, QueueDiagnostics{}, err
 			}
 			for _, run := range runs {
 				if seen[run.ID] {
 					continue
 				}
 				seen[run.ID] = true
+				if run.Status != "queued" && run.Status != "in_progress" {
+					diagnostic.Causes["run left runner-queue view; GitHub approvals, concurrency or other state possible"]++
+					continue
+				}
 				jobs, err := c.jobs(repo, run.ID, "latest")
 				if err != nil {
-					return policy.State{}, nil, err
+					return policy.State{}, nil, QueueDiagnostics{}, err
 				}
 				onLabel, pinned := false, false
 				for _, j := range jobs {
 					switch {
 					case j.Status == "queued" && slices.Contains(j.Labels, label):
-						onLabel = true
-						if age := now.Sub(j.CreatedAt); age > s.OldestQueued {
-							s.OldestQueued = age
+						if j.RunnerName != "" || j.RunnerID != 0 {
+							diagnostic.Causes["runner assigned; execution unverified"]++
+							pinned = true
+							continue
 						}
+						if j.GroupID != 0 || c.Org {
+							diagnostic.Causes["runner group access unverified"]++
+						}
+						age, issue := queueAge(j, run, now)
+						if issue != "" {
+							diagnostic.Causes[issue]++
+							pinned = true
+						} else {
+							onLabel = true
+							s.OldestQueued = max(s.OldestQueued, age)
+						}
+						diagnostic.Causes[queueCause(runners, j.Labels, age, timeout)]++
 					case j.Status == "completed" && (j.Conclusion == "success" || j.Conclusion == "skipped" || j.Conclusion == "neutral"):
+					case j.Status == "waiting" || j.Status == "pending" || j.Status == "requested":
+						diagnostic.Causes["job waiting on GitHub; inspect approvals or concurrency"]++
+						pinned = true
 					default:
 						pinned = true
 					}
@@ -209,7 +260,59 @@ func (c *Collector) selfHosted(label string) (policy.State, []Run, error) {
 			}
 		}
 	}
-	return s, movable, nil
+	return s, movable, diagnostic, nil
+}
+
+func hasLabel(r runner, label string) bool {
+	return slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return l.Name == label })
+}
+
+func queueAge(j job, run workflowRun, now time.Time) (time.Duration, string) {
+	switch {
+	case j.RunAttempt != 0 && j.RunAttempt != run.RunAttempt:
+		return 0, "queue observation is stale; job attempt changed"
+	case j.CreatedAt.IsZero():
+		return 0, "queue age unknown; job creation time missing"
+	case j.CreatedAt.After(now):
+		return 0, "queue age unknown; job creation time is in the future"
+	case j.CreatedAt.Before(run.CreatedAt):
+		return 0, "queue age unknown; job creation time predates the run"
+	default:
+		return now.Sub(j.CreatedAt), ""
+	}
+}
+
+func queueCause(runners []runner, labels []string, age, timeout time.Duration) string {
+	if len(runners) == 0 {
+		switch {
+		case age > timeout:
+			return "queue timeout with no registered runner; cold start or pool outage"
+		case age > 0:
+			return "no registered runner yet; cold start possible"
+		default:
+			return "no registered runner; cause unknown"
+		}
+	}
+	matches, online := false, false
+	for _, r := range runners {
+		if !slices.ContainsFunc(labels, func(label string) bool { return !hasLabel(r, label) }) {
+			matches = true
+			if r.Status == "online" {
+				online = true
+				if !r.Busy {
+					return "idle runner has all labels; queue cause unknown"
+				}
+			}
+		}
+	}
+	switch {
+	case online:
+		return "online runners with all labels are busy"
+	case matches:
+		return "runners with all labels are registered but none online"
+	default:
+		return "no visible runner has all extra labels"
+	}
 }
 
 // gitHubHosted sums this month's GitHub-hosted Linux minutes from the billing

@@ -1,6 +1,7 @@
 package apply
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,14 +17,17 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/github"
 )
 
+const fixtureSHA = "0123456789012345678901234567890123456789"
+
 var moveTime = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 var moveRun = collect.Run{Repo: "acme/app", ID: 1, Attempt: 1, Label: "home-ci"}
-var moveTargets = map[string][]string{"acme/app": {"hosted-ci"}}
+var moveTargets = Targets{"acme/app": {"CI_RUNNER": "hosted-ci"}}
 
 func noop() error { return nil }
 
 type moveFixture struct {
 	run                                            remoteRun
+	workflow                                       string
 	jobs                                           map[int][]recoveryJob
 	posts                                          []string
 	cancelCompletes, forceCompletes, rerunAdvances bool
@@ -37,20 +41,31 @@ type moveFixture struct {
 }
 
 func queuedJob() recoveryJob {
-	return recoveryJob{ID: 10, Status: "queued", Labels: []string{"home-ci"}}
+	return recoveryJob{ID: 10, Name: "build", Status: "queued", Labels: []string{"home-ci"}}
 }
 
 func newMoveFixture(t *testing.T) *moveFixture {
 	t.Helper()
-	f := &moveFixture{run: remoteRun{Status: "queued", Attempt: 1}, jobs: map[int][]recoveryJob{1: {queuedJob()}}, forceCompletes: true, rerunAdvances: true}
+	f := &moveFixture{workflow: "jobs:\n  build:\n    runs-on: ${{ vars.CI_RUNNER }}\n", run: remoteRun{Status: "queued", Attempt: 1}, jobs: map[int][]recoveryJob{1: {queuedJob()}}, forceCompletes: true, rerunAdvances: true}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
+			switch r.URL.Path {
+			case "/repos/acme/app/contents/.github/workflows/ci.yml":
+				_ = json.NewEncoder(w).Encode(map[string]string{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(f.workflow))})
+				return
+			case "/repos/acme/app/actions/variables/CI_RUNNER":
+				_ = json.NewEncoder(w).Encode(map[string]string{"value": "hosted-ci"})
+				return
+			}
 			if r.URL.Path == runPath(moveRun) {
 				if f.readError != 0 {
 					w.WriteHeader(f.readError)
 					return
 				}
-				_ = json.NewEncoder(w).Encode(f.run)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status": f.run.Status, "conclusion": f.run.Conclusion, "run_attempt": f.run.Attempt,
+					"path": ".github/workflows/ci.yml", "event": "push", "head_sha": fixtureSHA,
+				})
 				return
 			}
 			var attempt int
@@ -72,7 +87,7 @@ func newMoveFixture(t *testing.T) *moveFixture {
 					jobs = jobs[1:]
 				}
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(f.jobs[attempt]), "jobs": jobs})
 			if f.onJobs != nil {
 				f.onJobs()
 			}
@@ -100,7 +115,7 @@ func newMoveFixture(t *testing.T) *moveFixture {
 			if f.rerunAdvances {
 				f.run.Attempt++
 				f.run.Status, f.run.Conclusion = "queued", ""
-				f.jobs[f.run.Attempt] = []recoveryJob{{ID: 20, Status: "queued", Labels: []string{"hosted-ci"}}}
+				f.jobs[f.run.Attempt] = []recoveryJob{{ID: 20, Name: "build", Status: "in_progress", Labels: []string{"hosted-ci"}, Runner: "hosted"}}
 			}
 		default:
 			t.Errorf("unexpected POST %s", r.URL.Path)
@@ -134,7 +149,7 @@ func (f *moveFixture) move(t *testing.T, st *State, at time.Duration, stuck ...c
 }
 
 func ownedCancellation() State {
-	return State{Cancelled: map[string]Moved{key(moveRun): {Run: moveRun, At: moveTime}}}
+	return State{Cancelled: map[string]Moved{key(moveRun): {Run: moveRun, At: moveTime, Jobs: []MigratedJob{{ID: 10, Name: "build", Variable: "CI_RUNNER", Label: "hosted-ci"}}}}}
 }
 
 func TestMoveRecoversAcceptedCancellationThatStaysQueued(t *testing.T) {
@@ -190,7 +205,7 @@ func TestMoveForceNeverInterruptsExecutedOrUnknownJobs(t *testing.T) {
 	cases := map[string][]recoveryJob{
 		"running":          {{ID: 10, Status: "in_progress", Runner: "runner"}},
 		"successful work":  {queuedJob(), {ID: 11, Status: "completed", Conclusion: "success", Runner: "runner"}},
-		"runner assigned":  {{ID: 10, Status: "queued", Labels: []string{"home-ci"}, RunnerID: 22}},
+		"runner assigned":  {{ID: 10, Name: "build", Status: "queued", Labels: []string{"home-ci"}, RunnerID: 22}},
 		"failed work":      {queuedJob(), {ID: 11, Status: "completed", Conclusion: "failure"}},
 		"no jobs":          {},
 		"missing id":       {{Status: "queued"}},
@@ -224,10 +239,8 @@ func TestMoveChecksEveryJobPageAndStartedStep(t *testing.T) {
 	f.paginated = true
 	j := queuedJob()
 	j.ID = 11
-	j.Steps = append(j.Steps, struct {
-		Status    string     `json:"status"`
-		StartedAt *time.Time `json:"started_at"`
-	}{Status: "in_progress"})
+	j.Name = "second"
+	j.Steps = append(j.Steps, recoveryStep{Status: "in_progress"})
 	f.jobs[1] = append(f.jobs[1], j)
 	st := ownedCancellation()
 	f.move(t, &st, 5*time.Minute)
@@ -254,7 +267,7 @@ func TestMoveRechecksAttemptAfterReadingJobs(t *testing.T) {
 }
 
 func TestMoveNormalCancelRevalidatesWorkAndLabels(t *testing.T) {
-	for _, j := range []recoveryJob{{ID: 10, Status: "in_progress", Runner: "r"}, {ID: 10, Status: "queued", Labels: []string{"other"}}} {
+	for _, j := range []recoveryJob{{ID: 10, Status: "in_progress", Runner: "r"}, {ID: 10, Name: "build", Status: "queued", Labels: []string{"other"}}} {
 		f := newMoveFixture(t)
 		f.jobs[1] = []recoveryJob{j}
 		st := State{}
@@ -426,5 +439,152 @@ func TestMoveAttentionClearsAfterExternalCompletion(t *testing.T) {
 	f.move(t, &st, 49*time.Hour)
 	if len(st.Rerun) != 0 {
 		t.Fatal("terminal history was not pruned")
+	}
+}
+
+func TestMoveRejectsStaleQueueAndUnusableRoutes(t *testing.T) {
+	for _, status := range []string{"waiting", "pending", "requested"} {
+		t.Run(status, func(t *testing.T) {
+			f := newMoveFixture(t)
+			f.run.Status = status
+			st := State{}
+			f.move(t, &st, 0, moveRun)
+			if len(f.posts) != 0 {
+				t.Fatalf("stale queue triggered %v", f.posts)
+			}
+		})
+	}
+	for _, targets := range []Targets{nil, {"acme/app": {"CI_RUNNER": "home-ci"}}, {"acme/app": {"CI_RUNNER": "zerobill-wait"}}} {
+		t.Run(fmt.Sprint(targets), func(t *testing.T) {
+			f := newMoveFixture(t)
+			st := State{}
+			_, err := f.writer.Move(&st, []collect.Run{moveRun}, targets, moveTime, noop)
+			if err != nil || len(f.posts) != 0 {
+				t.Fatalf("unusable route triggered %v: %v", f.posts, err)
+			}
+		})
+	}
+}
+
+func TestMoveDoesNotFollowChangedRouteAfterCancellation(t *testing.T) {
+	f := newMoveFixture(t)
+	f.cancelCompletes = true
+	st := State{}
+	f.move(t, &st, 0, moveRun)
+	_, err := f.writer.Move(&st, nil, Targets{"acme/app": {"CI_RUNNER": "other-hosted"}}, moveTime.Add(time.Minute), noop)
+	if err != nil || !slices.Equal(f.posts, []string{"cancel"}) {
+		t.Fatalf("changed route triggered %v: %v", f.posts, err)
+	}
+}
+
+func TestMoveMatchesEachQueuedJobToItsOwnRoute(t *testing.T) {
+	f := newMoveFixture(t)
+	f.workflow = "jobs:\n  build:\n    runs-on: ${{ vars.CI_RUNNER }}\n  bot:\n    runs-on: ${{ vars.BOT_RUNNER }}\n  fixed:\n    runs-on: home-ci\n"
+	for _, name := range []string{"bot", "fixed"} {
+		j := queuedJob()
+		j.ID, j.Name = int64(len(f.jobs[1])+10), name
+		f.jobs[1] = append(f.jobs[1], j)
+	}
+	st := State{}
+	f.move(t, &st, 0, moveRun)
+	if len(f.posts) != 0 {
+		t.Fatalf("mixed routes triggered %v", f.posts)
+	}
+}
+
+func TestMoveVerifiesMigratedJobRatherThanVisibleSibling(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		jobs      []recoveryJob
+		runStatus string
+		confirmed bool
+		report    string
+		attention bool
+	}{
+		{"partial", []recoveryJob{{ID: 21, Name: "downstream", Status: "queued", Labels: []string{"hosted-ci"}}}, "queued", false, "build", false},
+		{"wrong", []recoveryJob{{ID: 21, Name: "downstream", Status: "queued", Labels: []string{"hosted-ci"}}, {ID: 20, Name: "build", Status: "queued", Labels: []string{"other"}}}, "queued", false, "unexpected", true},
+		{"missing labels", []recoveryJob{{ID: 20, Name: "build", Status: "queued"}}, "queued", false, "build", false},
+		{"waiting approval", []recoveryJob{{ID: 20, Name: "build", Status: "waiting", Labels: []string{"hosted-ci"}}}, "waiting", true, "GitHub", false},
+		{"pending concurrency", []recoveryJob{{ID: 20, Name: "build", Status: "pending", Labels: []string{"hosted-ci"}}}, "pending", true, "GitHub", false},
+		{"skipped", []recoveryJob{{ID: 20, Name: "build", Status: "completed", Conclusion: "skipped", Labels: []string{"hosted-ci"}}, {ID: 21, Name: "downstream", Status: "queued", Labels: []string{"hosted-ci"}}}, "completed", false, "skipped", true},
+		{"assigned", []recoveryJob{{ID: 20, Name: "build", Status: "queued", Labels: []string{"hosted-ci"}, RunnerID: 3}}, "queued", true, "assigned", false},
+		{"started", []recoveryJob{{ID: 20, Name: "build", Status: "in_progress", Labels: []string{"hosted-ci"}, Runner: "hosted"}, {ID: 21, Name: "downstream", Status: "queued", Labels: []string{"fixed"}}}, "in_progress", true, "started", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newMoveFixture(t)
+			f.complete()
+			st := ownedCancellation()
+			f.move(t, &st, time.Minute)
+			f.run.Status = tc.runStatus
+			f.jobs[2] = tc.jobs
+			got := f.move(t, &st, 2*time.Minute)
+			k := key(moveRun)
+			m := st.Cancelled[k]
+			if (len(got.Rerun) == 1) != tc.confirmed || m.NeedsAttention() != tc.attention ||
+				!strings.Contains(got.Recovery[k]+m.Problem, tc.report) || len(f.posts) != 1 {
+				t.Fatalf("got=%+v state=%+v posts=%v", got, m, f.posts)
+			}
+		})
+	}
+}
+
+func TestMovePreservesCompletedSiblingsDuringForceAndRerun(t *testing.T) {
+	f := newMoveFixture(t)
+	f.jobs[1] = append(f.jobs[1], recoveryJob{ID: 11, Name: "lint", Status: "completed", Conclusion: "success", Runner: "lint-runner"})
+	st := State{}
+	for _, at := range []time.Duration{0, 5 * time.Minute, 6 * time.Minute, 7 * time.Minute} {
+		f.move(t, &st, at, moveRun)
+	}
+	if !slices.Equal(f.posts, []string{"cancel", "force-cancel", "rerun-failed-jobs"}) || len(st.Rerun) != 1 {
+		t.Fatalf("posts=%v state=%+v", f.posts, st)
+	}
+}
+
+func TestMoveLabelConfirmationIsDurableWhilePickupIsUnverified(t *testing.T) {
+	f := newMoveFixture(t)
+	f.complete()
+	st := ownedCancellation()
+	path := filepath.Join(t.TempDir(), "applied.json")
+	for _, at := range []time.Duration{time.Minute, 2 * time.Minute, 3 * time.Minute, 6 * time.Minute} {
+		got, err := f.writer.Move(&st, nil, moveTargets, moveTime.Add(at), func() error { return SaveState(path, st) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (len(got.Rerun) == 1) != (at == 2*time.Minute) {
+			t.Fatalf("at %s: %+v", at, got)
+		}
+		st, err = LoadState(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.jobs[2][0].Status = "queued"
+		f.jobs[2][0].Runner = ""
+	}
+	m := st.Cancelled[key(moveRun)]
+	if !m.NeedsAttention() || !m.LabelsConfirmed || m.Attempt != 2 || len(f.posts) != 1 {
+		t.Fatalf("posts=%v state=%+v", f.posts, st)
+	}
+}
+
+func TestMoveLegacyCancellationKeepsOwnershipWithoutPosting(t *testing.T) {
+	f := newMoveFixture(t)
+	f.complete()
+	var st State
+	if err := json.Unmarshal([]byte(`{"cancelled":{"acme/app#1":{"repo":"acme/app","id":1,"attempt":1,"label":"home-ci","at":"2026-01-01T12:00:00Z","expected":["hosted-ci"]}}}`), &st); err != nil {
+		t.Fatal(err)
+	}
+	f.move(t, &st, time.Minute, moveRun)
+	if m := st.Cancelled[key(moveRun)]; len(f.posts) != 0 || !m.NeedsAttention() || !strings.Contains(m.Problem, "no job and replacement route evidence") {
+		t.Fatalf("posts=%v record=%+v", f.posts, m)
+	}
+}
+
+func TestMoveLeavesDependentJobsToOperator(t *testing.T) {
+	f := newMoveFixture(t)
+	f.workflow += "  publish:\n    needs: build\n    runs-on: paid-fixed-runner\n"
+	st := State{}
+	got := f.move(t, &st, 0, moveRun)
+	if len(f.posts) != 0 || !strings.Contains(got.Recovery[key(moveRun)], "depends on") {
+		t.Fatalf("posts=%v recovery=%v", f.posts, got.Recovery)
 	}
 }

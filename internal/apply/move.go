@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/morhaf-ko/zerobill/internal/collect"
+	"github.com/morhaf-ko/zerobill/internal/discover"
 )
 
 const (
@@ -23,25 +24,41 @@ const (
 
 type Moves struct {
 	Cancelled, Forced, Rerun []string
+	Recovery                 map[string]string
+}
+
+// MigratedJob records the original job ID and the stable name used across attempts.
+type MigratedJob struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Variable string `json:"variable"`
+	Label    string `json:"label"`
 }
 
 type remoteRun struct {
+	Path       string `json:"path"`
+	SHA        string `json:"head_sha"`
+	Event      string `json:"event"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	Attempt    int    `json:"run_attempt"`
 }
 
 type recoveryJob struct {
-	ID         int64    `json:"id"`
-	Status     string   `json:"status"`
-	Conclusion string   `json:"conclusion"`
-	Labels     []string `json:"labels"`
-	Runner     string   `json:"runner_name"`
-	RunnerID   int64    `json:"runner_id"`
-	Steps      []struct {
-		Status    string     `json:"status"`
-		StartedAt *time.Time `json:"started_at"`
-	} `json:"steps"`
+	Name       string         `json:"name"`
+	ID         int64          `json:"id"`
+	Status     string         `json:"status"`
+	Conclusion string         `json:"conclusion"`
+	Labels     []string       `json:"labels"`
+	Runner     string         `json:"runner_name"`
+	RunAttempt int            `json:"run_attempt"`
+	RunnerID   int64          `json:"runner_id"`
+	Steps      []recoveryStep `json:"steps"`
+}
+
+type recoveryStep struct {
+	Status    string     `json:"status"`
+	StartedAt *time.Time `json:"started_at"`
 }
 
 func key(r collect.Run) string     { return fmt.Sprintf("%s#%d", r.Repo, r.ID) }
@@ -58,16 +75,30 @@ func (w *Writer) run(r collect.Run) (remoteRun, error) {
 
 func (w *Writer) jobs(r collect.Run) ([]recoveryJob, error) {
 	var jobs []recoveryJob
+	total := -1
 	err := w.GH.Paginate(fmt.Sprintf("%s/attempts/%d/jobs?per_page=100", runPath(r), r.Attempt), func(raw []byte) error {
 		var page struct {
-			Jobs []recoveryJob `json:"jobs"`
+			Total *int          `json:"total_count"`
+			Jobs  []recoveryJob `json:"jobs"`
 		}
 		if err := json.Unmarshal(raw, &page); err != nil {
 			return err
 		}
+		if page.Total == nil || (total >= 0 && total != *page.Total) {
+			return fmt.Errorf("attempt job count is missing or changed across pages")
+		}
+		total = *page.Total
+		for _, j := range page.Jobs {
+			if j.RunAttempt != 0 && j.RunAttempt != r.Attempt {
+				return fmt.Errorf("job %d belongs to attempt %d, expected %d", j.ID, j.RunAttempt, r.Attempt)
+			}
+		}
 		jobs = append(jobs, page.Jobs...)
 		return nil
 	})
+	if err == nil && len(jobs) != total {
+		err = fmt.Errorf("attempt reports %d jobs but returned %d", total, len(jobs))
+	}
 	return jobs, err
 }
 
@@ -84,18 +115,144 @@ func unstarted(j recoveryJob) bool {
 	return j.Status == "queued" || (j.Status == "completed" && (j.Conclusion == "cancelled" || j.Conclusion == "skipped"))
 }
 
-func movable(jobs []recoveryJob, label string) bool {
-	queued := false
+func runnerQueue(status string) bool {
+	return status == "queued" || status == "in_progress"
+}
+
+func migrationJobs(jobs []recoveryJob, source string, cancelled bool) ([]recoveryJob, error) {
+	var affected []recoveryJob
+	names := map[string]bool{}
 	for _, j := range jobs {
-		if j.Status == "queued" && unstarted(j) && slices.Contains(j.Labels, label) {
-			queued = true
+		if j.Name == "" || names[j.Name] || j.ID <= 0 {
+			return nil, fmt.Errorf("attempt job identities are incomplete or ambiguous")
+		}
+		names[j.Name] = true
+		switch {
+		case j.Status == "completed" && (j.Conclusion == "success" || j.Conclusion == "neutral" || j.Conclusion == "skipped"):
+			continue
+		case !cancelled && j.Status == "queued" && unstarted(j):
+		case cancelled && j.Status == "completed" && j.Conclusion == "cancelled" && unstarted(j):
+		default:
+			return nil, fmt.Errorf("job %q has status %s/%s or has reached a runner", j.Name, j.Status, j.Conclusion)
+		}
+		if source == "" || len(j.Labels) != 1 || j.Labels[0] != source {
+			return nil, fmt.Errorf("job %q does not have the single stalled label %q", j.Name, source)
+		}
+		affected = append(affected, j)
+	}
+	if len(affected) == 0 {
+		return nil, fmt.Errorf("no affected jobs are visible in the attempt")
+	}
+	return affected, nil
+}
+
+// Targets contains eligible route labels successfully applied this check, by repository and variable.
+type Targets map[string]map[string]string
+
+func (w *Writer) migration(r collect.Run, run remoteRun, affected []recoveryJob, targets map[string]string, previous []MigratedJob) ([]MigratedJob, error) {
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("repository has no verified eligible replacement route")
+	}
+	routes, err := discover.JobRoutes(w.GH, r.Repo, run.Path, run.SHA, run.Event)
+	if err != nil {
+		return nil, err
+	}
+	plan := make([]MigratedJob, 0, len(affected))
+	for _, j := range affected {
+		route := routes[j.Name]
+		if route.Dependent != "" {
+			return nil, fmt.Errorf("job %q depends on %q and GitHub could rerun it", route.Dependent, j.Name)
+		}
+		variable := route.Variable
+		label := targets[variable]
+		if variable == "" || label == "" || label == r.Label || label == "zerobill-wait" {
+			return nil, fmt.Errorf("job %q has no eligible replacement for its runs-on declaration", j.Name)
+		}
+		plan = append(plan, MigratedJob{ID: j.ID, Name: j.Name, Variable: variable, Label: label})
+	}
+	sort.Slice(plan, func(i, j int) bool { return plan[i].ID < plan[j].ID })
+	if previous != nil && !slices.Equal(previous, plan) {
+		return nil, fmt.Errorf("affected jobs or their replacement route changed after cancellation")
+	}
+	checked := map[string]bool{}
+	for _, job := range plan {
+		if checked[job.Variable] {
 			continue
 		}
-		if j.Status != "completed" || (j.Conclusion != "success" && j.Conclusion != "skipped" && j.Conclusion != "neutral") {
-			return false
+		value, err := w.variable(r.Repo, job.Variable)
+		if err != nil {
+			return nil, err
+		}
+		if value != job.Label {
+			return nil, fmt.Errorf("%s currently holds %q, expected %q", job.Variable, value, job.Label)
+		}
+		checked[job.Variable] = true
+	}
+	return plan, nil
+}
+
+type pickup int
+
+const (
+	queued pickup = iota
+	githubWaiting
+	assigned
+	started
+)
+
+func rerunEvidence(jobs []recoveryJob, expected []MigratedJob, runStatus string) (progress string, confirmed, executing bool, problem string) {
+	if len(expected) == 0 {
+		return "", false, false, "saved rerun has no migrated job identities; inspect the new attempt"
+	}
+	visible := map[string]recoveryJob{}
+	duplicate := map[string]bool{}
+	for _, j := range jobs {
+		if _, exists := visible[j.Name]; exists {
+			duplicate[j.Name] = true
+		}
+		visible[j.Name] = j
+	}
+	least := started
+	for _, want := range expected {
+		j, found := visible[want.Name]
+		if duplicate[want.Name] {
+			return "", false, false, fmt.Sprintf("rerun job %q has an ambiguous identity", want.Name)
+		}
+		if !found || j.ID <= 0 || j.ID == want.ID || j.Status == "" {
+			return fmt.Sprintf("waiting for migrated job %q in the new attempt", want.Name), false, false, ""
+		}
+		if j.Status == "completed" && (j.Conclusion == "skipped" || j.Conclusion == "cancelled") {
+			return "", false, false, fmt.Sprintf("migrated job %q was %s; pickup is unverified", want.Name, j.Conclusion)
+		}
+		if len(j.Labels) == 0 {
+			return fmt.Sprintf("waiting for runner labels on migrated job %q", want.Name), false, false, ""
+		}
+		if len(j.Labels) != 1 || j.Labels[0] != want.Label {
+			return "", false, false, fmt.Sprintf("migrated job %q has unexpected runner labels %v; expected %q", want.Name, j.Labels, want.Label)
+		}
+		switch {
+		case j.Status == "in_progress" || slices.ContainsFunc(j.Steps, func(step recoveryStep) bool { return step.StartedAt != nil }):
+		case j.Status == "completed" && (j.Runner != "" || j.RunnerID != 0):
+		case j.Status == "waiting" || j.Status == "pending" || j.Status == "requested":
+			least = min(least, githubWaiting)
+		case j.Runner != "" || j.RunnerID != 0:
+			least = min(least, assigned)
+		default:
+			least = queued
 		}
 	}
-	return label != "" && queued
+	switch {
+	case least == started:
+		return "replacement labels confirmed; migrated jobs started", true, true, ""
+	case runStatus == "completed":
+		return "replacement labels confirmed; terminal attempt without verified pickup", true, false, ""
+	case least == githubWaiting || runStatus == "waiting" || runStatus == "pending" || runStatus == "requested":
+		return "replacement labels confirmed; waiting on GitHub, inspect concurrency or approvals", true, false, ""
+	case least == assigned:
+		return "replacement labels confirmed; runner assigned, execution unverified", true, false, ""
+	default:
+		return "replacement labels confirmed; waiting for runner pickup", true, false, ""
+	}
 }
 
 func (m Moved) since() time.Time {
@@ -107,10 +264,23 @@ func (m Moved) since() time.Time {
 
 func (m Moved) NeedsAttention() bool { return m.Stage == needsAttention }
 
+func (m Moved) PendingStatus() string {
+	switch m.Stage {
+	case "":
+		return "waiting for normal cancellation"
+	case forceRequested:
+		return "waiting for force cancellation"
+	case rerunRequested:
+		return "verifying rerun"
+	default:
+		return m.Stage
+	}
+}
+
 // Move checkpoints mutation intent before each POST. An uncertain POST is reconciled,
 // never resubmitted; GitHub offers no atomic attempt condition on these endpoints.
-func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]string, now time.Time, checkpoint func() error) (Moves, error) {
-	var out Moves
+func (w *Writer) Move(st *State, stuck []collect.Run, targets Targets, now time.Time, checkpoint func() error) (Moves, error) {
+	out := Moves{Recovery: map[string]string{}}
 	if st.Cancelled == nil {
 		st.Cancelled = map[string]Moved{}
 	}
@@ -131,10 +301,16 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 		return nil
 	}
 	handled := func(k string, m Moved) error {
+		previous := st.Cancelled[k]
 		delete(st.Cancelled, k)
 		m.At = now
 		st.Rerun[k] = m
-		return checkpoint()
+		if err := checkpoint(); err != nil {
+			delete(st.Rerun, k)
+			st.Cancelled[k] = previous
+			return err
+		}
+		return nil
 	}
 	fail := func(k string, m Moved, why string) error {
 		m.Stage, m.Problem = needsAttention, why
@@ -202,40 +378,41 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 			}
 			next := m.Run
 			next.Attempt = run.Attempt
-			// An attention record must track the observed rerun, not its cancelled predecessor.
-			m.Attempt = run.Attempt
 			jobs, err := w.jobs(next)
 			if err != nil {
+				m.Attempt = run.Attempt
 				if err := readError(k, m, err); err != nil {
 					return out, err
 				}
 				continue
 			}
-			visible, match := false, true
-			for _, j := range jobs {
-				if j.Status == "completed" && j.Conclusion == "skipped" {
-					continue
-				}
-				if j.ID == 0 || j.Status == "" {
-					match = false
-				}
-				visible = true
-				match = match && slices.ContainsFunc(m.Expected, func(label string) bool { return slices.Contains(j.Labels, label) })
-			}
+			progress, confirmed, executing, problem := rerunEvidence(jobs, m.Jobs, run.Status)
+			firstConfirmation := confirmed && !m.LabelsConfirmed
+			m.LabelsConfirmed = m.LabelsConfirmed || confirmed
+			out.Recovery[k] = fmt.Sprintf("attempt %d: %s", run.Attempt, progress)
 			switch {
-			case visible && !match:
-				if err := fail(k, m, "rerun still targets an unexpected runner label; inspect workflow runs-on"); err != nil {
+			case problem != "":
+				m.Attempt = run.Attempt
+				if err := fail(k, m, problem); err != nil {
 					return out, err
 				}
-			case visible:
+			case executing:
+				m.Attempt = run.Attempt
 				if err := handled(k, m); err != nil {
 					return out, err
 				}
-				out.Rerun = append(out.Rerun, k)
-			case now.Sub(m.since()) >= recoveryWait:
-				if err := fail(k, m, "rerun jobs did not appear; runner label is unverified"); err != nil {
+			case run.Status == "completed" || now.Sub(m.since()) >= recoveryWait:
+				m.Attempt = run.Attempt
+				if err := fail(k, m, "cannot verify rerun pickup: "+progress); err != nil {
 					return out, err
 				}
+			case firstConfirmation:
+				if err := save(k, m); err != nil {
+					return out, err
+				}
+			}
+			if firstConfirmation {
+				out.Rerun = append(out.Rerun, k)
 			}
 			continue
 		}
@@ -274,12 +451,6 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 				continue
 			}
 		}
-		if len(targets[m.Repo]) == 0 {
-			if err := fail(k, m, "repository has no applied target route"); err != nil {
-				return out, err
-			}
-			continue
-		}
 		jobs, err := w.jobs(m.Run)
 		if err != nil {
 			if err := readError(k, m, err); err != nil {
@@ -287,34 +458,24 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 			}
 			continue
 		}
-		if len(jobs) == 0 {
-			if err := fail(k, m, "no attempt jobs are visible; cancellation safety cannot be verified"); err != nil {
-				return out, err
-			}
+		cancelled := run.Status == "completed"
+		action := "force-cancel"
+		if cancelled {
+			action = "rerun-failed-jobs"
+		}
+		affected, err := migrationJobs(jobs, m.Label, cancelled)
+		if err == nil && len(m.Jobs) == 0 {
+			err = fmt.Errorf("saved cancellation has no job and replacement route evidence")
+		}
+		if err == nil && len(targets[m.Repo]) == 0 && now.Sub(m.since()) < recoveryWait {
+			out.Recovery[k] = action + " delayed: repository has no verified eligible replacement route this check"
 			continue
 		}
-		action := "force-cancel"
-		if run.Status == "completed" {
-			action = "rerun-failed-jobs"
-			cancelled := false
-			safe := true
-			for _, j := range jobs {
-				if j.Status == "completed" && j.Conclusion == "cancelled" && unstarted(j) {
-					cancelled = true
-					continue
-				}
-				if j.Status != "completed" || (j.Conclusion != "success" && j.Conclusion != "skipped" && j.Conclusion != "neutral") {
-					safe = false
-				}
-			}
-			if !safe || !cancelled || len(targets[m.Repo]) == 0 {
-				if err := fail(k, m, "cancelled jobs or target labels cannot be safely verified"); err != nil {
-					return out, err
-				}
-				continue
-			}
-		} else if !slices.ContainsFunc(jobs, func(j recoveryJob) bool { return j.Status == "queued" }) || !allUnstarted(jobs) {
-			if err := fail(k, m, "work started or job metadata is ambiguous; refusing force cancellation"); err != nil {
+		if err == nil {
+			_, err = w.migration(m.Run, run, affected, targets[m.Repo], m.Jobs)
+		}
+		if err != nil {
+			if err := fail(k, m, action+" skipped: "+err.Error()); err != nil {
 				return out, err
 			}
 			continue
@@ -333,12 +494,13 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 			}
 			continue
 		}
-		if latest.Status != run.Status || latest.Conclusion != run.Conclusion {
+		if latest != run {
+			out.Recovery[k] = action + " delayed: run changed during verification"
 			continue
 		}
 		m.Stage, m.StageAt, m.Problem = forceRequested, now, ""
 		if action == "rerun-failed-jobs" {
-			m.Stage, m.Expected = rerunRequested, slices.Clone(targets[m.Repo])
+			m.Stage = rerunRequested
 		}
 		if err := save(k, m); err != nil {
 			return out, err
@@ -375,7 +537,8 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 			errs = append(errs, err)
 			continue
 		}
-		if run.Attempt != r.Attempt || run.Status == "completed" {
+		if run.Attempt != r.Attempt || !runnerQueue(run.Status) {
+			out.Recovery[k] = fmt.Sprintf("cancel skipped: attempt changed or run status %q is outside the runner queue", run.Status)
 			continue
 		}
 		jobs, err := w.jobs(r)
@@ -383,7 +546,14 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 			errs = append(errs, err)
 			continue
 		}
-		if !movable(jobs, r.Label) {
+		affected, err := migrationJobs(jobs, r.Label, false)
+		if err != nil {
+			out.Recovery[k] = "cancel skipped: " + err.Error()
+			continue
+		}
+		plan, err := w.migration(r, run, affected, targets[r.Repo], nil)
+		if err != nil {
+			out.Recovery[k] = "cancel skipped: " + err.Error()
 			continue
 		}
 		latest, err := w.run(r)
@@ -392,9 +562,10 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 			continue
 		}
 		if latest != run {
+			out.Recovery[k] = "cancel skipped: run changed during verification"
 			continue
 		}
-		m := Moved{Run: r, At: now, Stage: cancelRequested, StageAt: now}
+		m := Moved{Run: r, At: now, Stage: cancelRequested, StageAt: now, Jobs: plan}
 		if err := save(k, m); err != nil {
 			return out, err
 		}
@@ -414,13 +585,4 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets map[string][]strin
 	sort.Strings(out.Forced)
 	sort.Strings(out.Rerun)
 	return out, errors.Join(errs...)
-}
-
-func allUnstarted(jobs []recoveryJob) bool {
-	for _, j := range jobs {
-		if !unstarted(j) {
-			return false
-		}
-	}
-	return true
 }

@@ -21,22 +21,27 @@ type Writer struct {
 	GH *github.Client
 }
 
+func (w *Writer) variable(repo, name string) (string, error) {
+	var current struct {
+		Value string `json:"value"`
+	}
+	err := w.GH.Get("/repos/"+repo+"/actions/variables/"+url.PathEscape(name), &current)
+	return current.Value, err
+}
+
 // Set sets the Actions variable name in repo, owner/name, to label, writing
 // only when it differs. It reports whether it wrote.
 func (w *Writer) Set(repo, name, label string) (bool, error) {
 	base := "/repos/" + repo + "/actions/variables"
 	path := base + "/" + url.PathEscape(name)
-	var cur struct {
-		Value string `json:"value"`
-	}
 	body := map[string]string{"name": name, "value": label}
-	err := w.GH.Get(path, &cur)
+	current, err := w.variable(repo, name)
 	switch {
 	case github.IsNotFound(err):
 		return true, w.GH.Send(http.MethodPost, base, body)
 	case err != nil:
 		return false, err
-	case cur.Value == label:
+	case current == label:
 		return false, nil
 	default:
 		return true, w.GH.Send(http.MethodPatch, path, body)
@@ -68,12 +73,13 @@ type State struct {
 // Moved tracks one owned recovery. Empty Stage means normal cancellation was accepted.
 type Moved struct {
 	collect.Run
-	At       time.Time `json:"at"`
-	Stage    string    `json:"stage,omitempty"`
-	StageAt  time.Time `json:"stage_at,omitempty"`
-	Expected []string  `json:"expected,omitempty"`
-	Problem  string    `json:"problem,omitempty"`
-	Alerted  bool      `json:"alerted,omitempty"`
+	At              time.Time     `json:"at"`
+	Stage           string        `json:"stage,omitempty"`
+	StageAt         time.Time     `json:"stage_at,omitempty"`
+	Jobs            []MigratedJob `json:"jobs,omitempty"`
+	LabelsConfirmed bool          `json:"labels_confirmed,omitempty"`
+	Problem         string        `json:"problem,omitempty"`
+	Alerted         bool          `json:"alerted,omitempty"`
 }
 
 // LoadState reads run state; a missing file means none.
