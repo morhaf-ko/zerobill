@@ -473,7 +473,7 @@ func (c *controller) capacityAlerts(now time.Time, states map[string]policy.Stat
 		if c.a.cfg.SelfHostedLabel != "" {
 			action = "Turn on your self-hosted runners if needed."
 		}
-		msg := fmt.Sprintf("zerobill: %s has %.0f%% of its monthly free allowance left (%.0f min); reserve %d%%. %s Provider spending limits are still required to prevent charges.", p.Name, percent, remaining, c.a.cfg.ReservePercent, action)
+		msg := fmt.Sprintf("zerobill: %s has %.0f%% of its monthly free allowance left (%.0f min); reserve %d%%. %s Provider spending limits are still required to prevent charges.", p.Name, percent, remaining, p.ReservePercent, action)
 		if p.Name == "blacksmith" {
 			msg += " Blacksmith usage is estimated."
 		}

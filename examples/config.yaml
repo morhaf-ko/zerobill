@@ -7,11 +7,14 @@ owner: your-org
 # Enable only after installing the Blacksmith GitHub App.
 # blacksmith: false
 
-# Stop selecting a hosted tier with this percentage of its full allowance left.
-# reserve_percent: 10
+# Percentage of the GitHub Actions allowance to keep in reserve. Zero uses the full allowance.
+# github_reserve_percent: 5
+
+# Percentage of the Blacksmith allowance to keep in reserve. Zero uses the full allowance.
+# blacksmith_reserve_percent: 0
 
 # Warn at this percentage of the full allowance remaining. Zero disables warnings.
-# Choose a value above reserve_percent for advance notice.
+# Choose a value above the reserves of enabled providers for advance notice.
 # alert_remaining_percent: 20
 
 # Check runner availability and usage this often. Shorter intervals use more GitHub API requests.

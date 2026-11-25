@@ -95,7 +95,7 @@ func TestSetupToRoutingJourney(t *testing.T) {
 		case "/repos/acme/sandbox/actions/runs/1/jobs":
 			end := now.Add(-time.Hour)
 			fmt.Fprintf(w, `{"jobs":[{"id":1,"status":"completed","runner_name":"synthetic","labels":["blacksmith-2vcpu-ubuntu-2404"],"started_at":%q,"completed_at":%q}]}`,
-				end.Add(-2700*time.Minute).Format(time.RFC3339), end.Format(time.RFC3339))
+				end.Add(-3000*time.Minute).Format(time.RFC3339), end.Format(time.RFC3339))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -119,7 +119,7 @@ func TestSetupToRoutingJourney(t *testing.T) {
 		t.Fatalf("setup report: %v\n%s", err, report.String())
 	}
 	var summary bytes.Buffer
-	if err := localStatus(&summary, a, time.Now().UTC()); err != nil || !strings.Contains(summary.String(), "GitHub Actions:") {
+	if err := localStatus(&summary, a, time.Now().UTC()); err != nil || !strings.Contains(summary.String(), "GitHub Actions") {
 		t.Fatalf("refresh did not save local status: %v\n%s", err, summary.String())
 	}
 	if err := os.Remove(a.refreshPath()); err != nil {
@@ -158,7 +158,7 @@ func TestSetupToRoutingJourney(t *testing.T) {
 		t.Helper()
 		l := step(t, c, at, a.col.Observe(a.providers))
 		summary.Reset()
-		if err := localStatus(&summary, a, now.Add(at)); err != nil || !strings.Contains(summary.String(), "CI_RUNNER: "+want+" (last applied)") {
+		if err := localStatus(&summary, a, now.Add(at)); err != nil || !strings.Contains(summary.String(), "CI_RUNNER  "+want) {
 			t.Fatalf("local status after controller check: %v\n%s", err, summary.String())
 		}
 		if len(l.Errors) != 0 || vars.values["acme/sandbox/CI_RUNNER"] != want {
@@ -176,7 +176,7 @@ func TestSetupToRoutingJourney(t *testing.T) {
 	}
 	online = false
 	check(2*time.Minute, githubLabel)
-	used = 1800
+	used = 1900
 	check(3*time.Minute, "home-ci")
 	cfg.SelfHostedLabel = ""
 	a.providers, a.routes = build(cfg, 2000)

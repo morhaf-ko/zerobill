@@ -17,29 +17,32 @@ import (
 )
 
 const (
-	DefaultReservePercent        = 10
-	DefaultAlertRemainingPercent = 20
-	DefaultCheckInterval         = 5 * time.Minute
-	DefaultQueueTimeout          = 2 * time.Minute
+	DefaultGitHubReservePercent     = 5
+	DefaultBlacksmithReservePercent = 0
+	DefaultAlertRemainingPercent    = 20
+	DefaultCheckInterval            = 5 * time.Minute
+	DefaultQueueTimeout             = 2 * time.Minute
 	// WaitingLabel must never be assigned to a runner; it queues jobs without selecting paid capacity.
 	WaitingLabel = "zerobill-wait"
 )
 
 // Config selects available capacity and the controller's checking and warning thresholds.
 type Config struct {
-	Owner                 string        `yaml:"owner"`
-	SelfHostedLabel       string        `yaml:"self_hosted_label,omitempty"`
-	Blacksmith            bool          `yaml:"blacksmith,omitempty"`
-	ReservePercent        int           `yaml:"reserve_percent"`
-	AlertRemainingPercent int           `yaml:"alert_remaining_percent"`
-	CheckInterval         time.Duration `yaml:"check_interval"`
-	QueueTimeout          time.Duration `yaml:"queue_timeout"`
-	Notify                string        `yaml:"notify,omitempty"`
+	Owner                    string        `yaml:"owner"`
+	SelfHostedLabel          string        `yaml:"self_hosted_label,omitempty"`
+	Blacksmith               bool          `yaml:"blacksmith,omitempty"`
+	GitHubReservePercent     int           `yaml:"github_reserve_percent"`
+	BlacksmithReservePercent int           `yaml:"blacksmith_reserve_percent"`
+	AlertRemainingPercent    int           `yaml:"alert_remaining_percent"`
+	CheckInterval            time.Duration `yaml:"check_interval"`
+	QueueTimeout             time.Duration `yaml:"queue_timeout"`
+	Notify                   string        `yaml:"notify,omitempty"`
 }
 
 func Defaults() Config {
-	return Config{ReservePercent: DefaultReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent,
-		CheckInterval: DefaultCheckInterval, QueueTimeout: DefaultQueueTimeout}
+	return Config{GitHubReservePercent: DefaultGitHubReservePercent, BlacksmithReservePercent: DefaultBlacksmithReservePercent,
+		AlertRemainingPercent: DefaultAlertRemainingPercent,
+		CheckInterval:         DefaultCheckInterval, QueueTimeout: DefaultQueueTimeout}
 }
 
 // Path returns the config file: $XDG_CONFIG_HOME/zerobill/config.yaml, else
@@ -76,14 +79,16 @@ func Load(path string) (*Config, error) {
 	}
 	c := Defaults()
 	var file struct {
-		Owner                 string        `yaml:"owner"`
-		SelfHostedLabel       string        `yaml:"self_hosted_label"`
-		Blacksmith            bool          `yaml:"blacksmith"`
-		Notify                string        `yaml:"notify"`
-		ReservePercent        yaml.Node     `yaml:"reserve_percent"`
-		AlertRemainingPercent yaml.Node     `yaml:"alert_remaining_percent"`
-		CheckInterval         time.Duration `yaml:"check_interval"`
-		QueueTimeout          time.Duration `yaml:"queue_timeout"`
+		Owner                    string        `yaml:"owner"`
+		SelfHostedLabel          string        `yaml:"self_hosted_label"`
+		Blacksmith               bool          `yaml:"blacksmith"`
+		Notify                   string        `yaml:"notify"`
+		ReservePercent           yaml.Node     `yaml:"reserve_percent"`
+		GitHubReservePercent     yaml.Node     `yaml:"github_reserve_percent"`
+		BlacksmithReservePercent yaml.Node     `yaml:"blacksmith_reserve_percent"`
+		AlertRemainingPercent    yaml.Node     `yaml:"alert_remaining_percent"`
+		CheckInterval            time.Duration `yaml:"check_interval"`
+		QueueTimeout             time.Duration `yaml:"queue_timeout"`
 	}
 	file.CheckInterval, file.QueueTimeout = c.CheckInterval, c.QueueTimeout
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
@@ -97,21 +102,24 @@ func Load(path string) (*Config, error) {
 	c.Owner, c.SelfHostedLabel, c.Blacksmith, c.Notify = file.Owner, file.SelfHostedLabel, file.Blacksmith, file.Notify
 	c.CheckInterval, c.QueueTimeout = file.CheckInterval, file.QueueTimeout
 	for _, field := range []struct {
-		name  string
-		node  yaml.Node
-		value *int
+		name    string
+		node    yaml.Node
+		targets []*int
 	}{
-		{"reserve_percent", file.ReservePercent, &c.ReservePercent},
-		{"alert_remaining_percent", file.AlertRemainingPercent, &c.AlertRemainingPercent},
+		{"reserve_percent", file.ReservePercent, []*int{&c.GitHubReservePercent, &c.BlacksmithReservePercent}},
+		{"github_reserve_percent", file.GitHubReservePercent, []*int{&c.GitHubReservePercent}},
+		{"blacksmith_reserve_percent", file.BlacksmithReservePercent, []*int{&c.BlacksmithReservePercent}},
+		{"alert_remaining_percent", file.AlertRemainingPercent, []*int{&c.AlertRemainingPercent}},
 	} {
 		if field.node.Kind == 0 {
 			continue
 		}
-		if field.node.Tag != "!!int" {
-			return nil, fmt.Errorf("%s: %s must be an integer", path, field.name)
+		var n int
+		if field.node.Tag != "!!int" || field.node.Decode(&n) != nil || !validPercent(n) {
+			return nil, fmt.Errorf("%s: %s must be an integer between 0 and 99", path, field.name)
 		}
-		if err := field.node.Decode(field.value); err != nil {
-			return nil, fmt.Errorf("%s: %s must be an integer", path, field.name)
+		for _, target := range field.targets {
+			*target = n
 		}
 	}
 
@@ -141,20 +149,26 @@ func FromEnv() (*Config, bool, error) {
 			*value = d
 		}
 	}
-	if v := os.Getenv("ZEROBILL_ALERT_REMAINING_PERCENT"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, true, errors.New("ZEROBILL_ALERT_REMAINING_PERCENT must be an integer between 0 and 99")
+	for _, field := range []struct {
+		name    string
+		targets []*int
+	}{
+		{"ZEROBILL_RESERVE_PERCENT", []*int{&c.GitHubReservePercent, &c.BlacksmithReservePercent}},
+		{"ZEROBILL_GITHUB_RESERVE_PERCENT", []*int{&c.GitHubReservePercent}},
+		{"ZEROBILL_BLACKSMITH_RESERVE_PERCENT", []*int{&c.BlacksmithReservePercent}},
+		{"ZEROBILL_ALERT_REMAINING_PERCENT", []*int{&c.AlertRemainingPercent}},
+	} {
+		v := os.Getenv(field.name)
+		if v == "" {
+			continue
 		}
-		c.AlertRemainingPercent = n
-	}
-
-	if v := os.Getenv("ZEROBILL_RESERVE_PERCENT"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, true, errors.New("ZEROBILL_RESERVE_PERCENT must be an integer between 0 and 99")
+		if err != nil || !validPercent(n) {
+			return nil, true, fmt.Errorf("%s must be an integer between 0 and 99", field.name)
 		}
-		c.ReservePercent = n
+		for _, target := range field.targets {
+			*target = n
+		}
 	}
 	switch v := os.Getenv("ZEROBILL_BLACKSMITH"); v {
 	case "", "false":
@@ -173,10 +187,13 @@ func (c *Config) check() error {
 	if c.Owner == "" {
 		return errors.New("owner is required")
 	}
-	if c.ReservePercent < 0 || c.ReservePercent > 99 {
-		return errors.New("reserve_percent must be an integer between 0 and 99")
+	if !validPercent(c.GitHubReservePercent) {
+		return errors.New("github_reserve_percent must be an integer between 0 and 99")
 	}
-	if c.AlertRemainingPercent < 0 || c.AlertRemainingPercent > 99 {
+	if !validPercent(c.BlacksmithReservePercent) {
+		return errors.New("blacksmith_reserve_percent must be an integer between 0 and 99")
+	}
+	if !validPercent(c.AlertRemainingPercent) {
 		return errors.New("alert_remaining_percent must be an integer between 0 and 99; zero disables warnings")
 	}
 	if c.SelfHostedLabel == WaitingLabel {
@@ -198,6 +215,8 @@ func (c *Config) check() error {
 	return nil
 }
 
+func validPercent(n int) bool { return n >= 0 && n <= 99 }
+
 // Create writes a validated config without replacing an existing file or symlink.
 func Create(path string, c Config) error {
 	if err := c.check(); err != nil {
@@ -217,8 +236,9 @@ func Create(path string, c Config) error {
 	}{
 		{"self_hosted_label", defaultExample(c.SelfHostedLabel, "home-ci"), c.SelfHostedLabel == "", "Optional self-hosted GitHub Actions label. Find it in Settings > Actions > Runners.\nOnly include machines you want used automatically. Omit without your own runners."},
 		{"blacksmith", c.Blacksmith, !c.Blacksmith, "Enable only after installing the Blacksmith GitHub App."},
-		{"reserve_percent", c.ReservePercent, c.ReservePercent == DefaultReservePercent, "Stop selecting a hosted tier with this percentage of its full allowance left."},
-		{"alert_remaining_percent", c.AlertRemainingPercent, c.AlertRemainingPercent == DefaultAlertRemainingPercent, "Warn at this percentage of the full allowance remaining. Zero disables warnings.\nChoose a value above reserve_percent for advance notice."},
+		{"github_reserve_percent", c.GitHubReservePercent, c.GitHubReservePercent == DefaultGitHubReservePercent, "Percentage of the GitHub Actions allowance to keep in reserve. Zero uses the full allowance."},
+		{"blacksmith_reserve_percent", c.BlacksmithReservePercent, c.BlacksmithReservePercent == DefaultBlacksmithReservePercent, "Percentage of the Blacksmith allowance to keep in reserve. Zero uses the full allowance."},
+		{"alert_remaining_percent", c.AlertRemainingPercent, c.AlertRemainingPercent == DefaultAlertRemainingPercent, "Warn at this percentage of the full allowance remaining. Zero disables warnings.\nChoose a value above the reserves of enabled providers for advance notice."},
 		{"check_interval", c.CheckInterval.String(), c.CheckInterval == DefaultCheckInterval, "Check runner availability and usage this often. Shorter intervals use more GitHub API requests."},
 		{"queue_timeout", c.QueueTimeout.String(), c.QueueTimeout == DefaultQueueTimeout, "Treat self-hosted capacity as unavailable after a job waits this long."},
 		{"notify", defaultExample(c.Notify, "https://ntfy.sh/your-topic"), c.Notify == "", "Optional routing-change and low-capacity alerts: ntfy, Discord or Slack webhook."},

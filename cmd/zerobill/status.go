@@ -141,7 +141,11 @@ func localStatus(w io.Writer, a *app, now time.Time) error {
 		s.GitHubMinutes, s.SelfHostedLabel = refresh.GitHubMinutes, refresh.SelfHostedLabel
 	}
 	if s.Checked.IsZero() {
-		fmt.Fprintln(w, "No saved check for this owner. Run zerobill status --refresh.")
+		fmt.Fprintf(w, "%s\n\n", a.cfg.Owner)
+		if err := renderCapacity(w, a.providers, nil, false, time.Time{}); err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "\nNo saved check for this owner. Run zerobill status --refresh.")
 		return nil
 	}
 	providers, routes := build(a.cfg, s.GitHubMinutes)
@@ -156,44 +160,43 @@ func localStatus(w io.Writer, a *app, now time.Time) error {
 		_, ok := s.States[p.Name]
 		complete = complete && ok
 	}
-	for _, rt := range routes {
-		if rt.Variable == "CI_RUNNER" && !s.UsesCI || rt.Variable == "BOT_RUNNER" && !s.UsesBot {
-			continue
-		}
-		applied := s.Applied[rt.Variable]
-		if applied.Label == "" {
-			fmt.Fprintf(w, "%s: no recorded assignment\n", rt.Variable)
-		} else {
-			fmt.Fprintf(w, "%s: %s (last applied)\n", rt.Variable, applied.Label)
-		}
-		if fresh && complete && now.Sub(coverageChecked) <= 3*a.cfg.CheckInterval {
-			d, _ := policy.Hold(policy.Decide(rt, s.States), applied, rt, s.States, s.Checked)
-			if d.Label != applied.Label {
-				fmt.Fprintf(w, "  Would use %s (%s)\n", d.Label, d.Reason)
+	fmt.Fprintf(w, "%s · Usage checked %s ago\n\n", a.cfg.Owner, age)
+	if err := renderCapacity(w, providers, s.States, currentMonth, time.Time{}); err != nil {
+		return err
+	}
+	fmt.Fprintln(w)
+	if s.UsesCI || s.UsesBot {
+		fmt.Fprintln(w, "Routing")
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "VARIABLE\tLAST APPLIED\tRECOMMENDED\tREASON")
+		for _, rt := range routes {
+			if rt.Variable == "CI_RUNNER" && !s.UsesCI || rt.Variable == "BOT_RUNNER" && !s.UsesBot {
+				continue
 			}
+			applied := s.Applied[rt.Variable]
+			last := applied.Label
+			if last == "" {
+				last = "No assignment"
+			}
+			next, reason := "-", "-"
+			if fresh && complete && now.Sub(coverageChecked) <= 3*a.cfg.CheckInterval {
+				d, _ := policy.Hold(policy.Decide(rt, s.States), applied, rt, s.States, s.Checked)
+				if d.Label != applied.Label {
+					next, reason = d.Label, d.Reason
+				}
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", rt.Variable, last, next, reason)
 		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		fmt.Fprintln(w)
 	}
 	if s.DiscoveryFailed {
 		fmt.Fprintln(w, "Workflow discovery was incomplete.")
 	} else if !s.UsesCI && !s.UsesBot {
 		fmt.Fprintln(w, "No connected workflows in the last check.")
 	}
-	labels := map[string]string{"runner": "Self-hosted", "blacksmith": "Blacksmith", "github": "GitHub Actions"}
-	for _, p := range providers {
-		state, ok := s.States[p.Name]
-		value := "unavailable"
-		switch {
-		case ok && p.Kind == policy.SelfHosted:
-			_, value = policy.Usable(p, state)
-		case ok && currentMonth:
-			value = fmt.Sprintf("%.0f free min left", max(p.Limit()-state.UsedMinutes, 0))
-			if state.Paused != "" {
-				value += " (" + state.Paused + ")"
-			}
-		}
-		fmt.Fprintf(w, "%s: %s\n", labels[p.Name], value)
-	}
-	fmt.Fprintf(w, "Usage checked %s ago. Free minutes exclude your %d%% reserve.\n", age, a.cfg.ReservePercent)
 	if s.Incomplete {
 		fmt.Fprintln(w, "The last controller check reported problems. See its logs.")
 	}
@@ -241,36 +244,12 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 	share := elapsed.Seconds() / start.AddDate(0, 1, 0).Sub(start).Seconds()
 	fmt.Fprintf(w, "%s, %s, %.0f%% of the month gone\n\n", a.cfg.Owner, now.Format("2 Jan 15:04 UTC"), share*100)
 
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUNNER\tLABEL\tSTATE\tUSED\tFREE\tMONTH END AT THIS PACE")
-	for _, p := range a.providers {
-		s, ok := states[p.Name]
-		if !ok {
-			fmt.Fprintf(tw, "%s\t%s\tnot observed\t\t\t\n", p.Name, p.Label)
-			continue
-		}
-		_, why := policy.Usable(p, s)
-		if p.Kind == policy.SelfHosted {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\n", p.Name, p.Label, why)
-			continue
-		}
-		pace := "-"
-		if s.UsedMinutes > 0 && share > 0 {
-			projected := s.UsedMinutes / share
-			pace = fmt.Sprintf("%.0f min", projected)
-			if projected > p.Limit() && s.UsedMinutes < p.Limit() {
-				pace += ", runs out " + start.Add(time.Duration(float64(elapsed)*p.Limit()/s.UsedMinutes)).Format("2 Jan")
-			}
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%.0f min\t%.0f min\t%s\n", p.Name, p.Label, why, s.UsedMinutes, max(p.Limit()-s.UsedMinutes, 0), pace)
-	}
-	if err := tw.Flush(); err != nil {
+	if err := renderCapacity(w, a.providers, states, true, now); err != nil {
 		return err
 	}
-
-	fmt.Fprintln(w)
-	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "VARIABLE\tUSE\tWHY")
+	fmt.Fprintln(w, "\nRouting")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "VARIABLE\tRECOMMENDED\tREASON")
 	for _, rt := range a.routes {
 		used := false
 		for _, repo := range found.Repos {
@@ -306,7 +285,7 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 		fmt.Fprintf(w, "\nWorkflow setup:\n  %s\n", strings.Join(problems, "\n  "))
 		workflowSteps(w, found, a.authSource)
 	}
-	fmt.Fprintf(w, "\nFREE excludes your %d%% reserve.\n", a.cfg.ReservePercent)
+	fmt.Fprintln(w, "\nFree minutes exclude each provider’s reserve.")
 	if a.cfg.Blacksmith {
 		fmt.Fprintln(w, "Blacksmith usage is estimated from GitHub Actions job history; no Blacksmith API key is used.")
 	}
@@ -329,12 +308,69 @@ func render(w io.Writer, now time.Time, a *app, applied map[string]policy.Applie
 	} else {
 		fmt.Fprintf(w, "Low-capacity alerts: %d%% remaining, once per provider per UTC month during run --apply.\n", a.cfg.AlertRemainingPercent)
 	}
-	if a.cfg.AlertRemainingPercent > 0 && a.cfg.AlertRemainingPercent <= a.cfg.ReservePercent {
-		fmt.Fprintln(w, "For advance warning, set alert_remaining_percent above reserve_percent.")
+	for _, p := range a.providers {
+		if p.Kind == policy.Metered && a.cfg.AlertRemainingPercent > 0 && a.cfg.AlertRemainingPercent <= p.ReservePercent {
+			fmt.Fprintln(w, "For advance warning, set alert_remaining_percent above the reserves of enabled providers.")
+			break
+		}
 	}
 	fmt.Fprintln(w, "Spending protection: provider limits are not verified. Configure billing limits separately; routing cannot guarantee zero charges.")
 	fmt.Fprintln(w, "\nNext: preview decisions without changing GitHub:\n  zerobill run\nAfter reviewing those decisions, enable routing with:\n  zerobill run --apply")
 	return nil
+}
+
+// A zero projection time hides the month-end estimate for saved status.
+func renderCapacity(w io.Writer, providers []policy.Provider, states map[string]policy.State, currentMonth bool, projectionTime time.Time) error {
+	fmt.Fprintln(w, "Capacity")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	columns := "PROVIDER\tLABEL\tSTATE\tUSED\tRESERVE\tFREE"
+	if !projectionTime.IsZero() {
+		columns += "\tMONTH END AT THIS PACE"
+	}
+	fmt.Fprintln(tw, columns)
+	names := map[string]string{"runner": "Self-hosted", "blacksmith": "Blacksmith", "github": "GitHub Actions"}
+	for _, p := range providers {
+		s, ok := states[p.Name]
+		state, used, reserve, free, pace := "Unavailable", "-", "-", "-", "-"
+		if p.Kind == policy.Metered {
+			reserve = fmt.Sprintf("%d%%", p.ReservePercent)
+		}
+		switch {
+		case ok && p.Kind == policy.SelfHosted:
+			_, state = policy.Usable(p, s)
+		case ok && currentMonth:
+			usable, why := policy.Usable(p, s)
+			state = why
+			if usable {
+				state = "Available"
+			}
+			used = fmt.Sprintf("%.0f min", s.UsedMinutes)
+			free = fmt.Sprintf("%.0f min", max(p.Limit()-s.UsedMinutes, 0))
+			if !projectionTime.IsZero() {
+				pace = projectedUsage(p, s, projectionTime)
+			}
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s", names[p.Name], p.Label, state, used, reserve, free)
+		if !projectionTime.IsZero() {
+			fmt.Fprintf(tw, "\t%s", pace)
+		}
+		fmt.Fprintln(tw)
+	}
+	return tw.Flush()
+}
+
+func projectedUsage(p policy.Provider, s policy.State, now time.Time) string {
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	elapsed := now.Sub(start)
+	if s.UsedMinutes <= 0 || elapsed <= 0 {
+		return "-"
+	}
+	projected := s.UsedMinutes * start.AddDate(0, 1, 0).Sub(start).Seconds() / elapsed.Seconds()
+	pace := fmt.Sprintf("%.0f min", projected)
+	if projected > p.Limit() && s.UsedMinutes < p.Limit() {
+		pace += ", runs out " + start.Add(time.Duration(float64(elapsed)*p.Limit()/s.UsedMinutes)).Format("2 Jan")
+	}
+	return pace
 }
 
 // maxFixed caps the fixed-runner lines, so a large organization's first status
@@ -350,17 +386,23 @@ func renderIncomplete(w io.Writer, a *app, found discover.Result, result collect
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "CHECK\tRESULT")
 	for _, key := range keys {
-		fmt.Fprintf(w, "%s: unavailable (read failed)\n", key)
+		fmt.Fprintf(tw, "%s\tunavailable (read failed)\n", key)
 	}
 	if len(found.Errors) > 0 {
-		fmt.Fprintln(w, "Workflows: some could not be read.")
+		fmt.Fprintln(tw, "Workflows\tsome could not be read")
 	}
 	if found.PrivateRepos == 0 && len(found.Repos) == 0 {
-		fmt.Fprintln(w, "Private repositories: none visible. The owner may have none, or this credential may lack access.")
+		fmt.Fprintln(tw, "Private repositories\tnone visible. The owner may have none, or this credential may lack access.")
 	} else if len(found.Repos) == 0 && len(found.Errors) == 0 {
-		fmt.Fprintf(w, "Private repositories: %d visible; no workflows use CI_RUNNER or BOT_RUNNER yet.\n", found.PrivateRepos)
+		fmt.Fprintf(tw, "Private repositories\t%d visible; no workflows use CI_RUNNER or BOT_RUNNER yet.\n", found.PrivateRepos)
 	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage estimates and runner recommendations are withheld until setup and reads succeed.")
 	fmt.Fprintln(w, "\nNext:")
 	switch {
