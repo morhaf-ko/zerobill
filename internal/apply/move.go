@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/morhaf-ko/zerobill/internal/collect"
+	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/discover"
 )
 
@@ -146,12 +147,20 @@ func migrationJobs(jobs []recoveryJob, source string, cancelled bool) ([]recover
 	return affected, nil
 }
 
-// Targets contains eligible route labels successfully applied this check, by repository and variable.
+// Targets maps successfully applied variables to eligible labels. An empty label means
+// the route was evaluated and is ineligible; an absent variable has no fresh evidence.
 type Targets map[string]map[string]string
+
+var errUnverifiedRoute = errors.New("replacement route could not be verified this check")
 
 func (w *Writer) migration(r collect.Run, run remoteRun, affected []recoveryJob, targets map[string]string, previous []MigratedJob) ([]MigratedJob, error) {
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("repository has no verified eligible replacement route")
+		return nil, fmt.Errorf("%w for %s", errUnverifiedRoute, r.Repo)
+	}
+	for _, job := range previous {
+		if _, verified := targets[job.Variable]; !verified {
+			return nil, fmt.Errorf("%w for %s", errUnverifiedRoute, job.Variable)
+		}
 	}
 	routes, err := discover.JobRoutes(w.GH, r.Repo, run.Path, run.SHA, run.Event)
 	if err != nil {
@@ -164,8 +173,11 @@ func (w *Writer) migration(r collect.Run, run remoteRun, affected []recoveryJob,
 			return nil, fmt.Errorf("job %q depends on %q and GitHub could rerun it", route.Dependent, j.Name)
 		}
 		variable := route.Variable
-		label := targets[variable]
-		if variable == "" || label == "" || label == r.Label || label == "zerobill-wait" {
+		label, verified := targets[variable]
+		if variable != "" && !verified {
+			return nil, fmt.Errorf("%w for %s", errUnverifiedRoute, variable)
+		}
+		if variable == "" || label == "" || label == r.Label || label == config.WaitingLabel {
 			return nil, fmt.Errorf("job %q has no eligible replacement for its runs-on declaration", j.Name)
 		}
 		plan = append(plan, MigratedJob{ID: j.ID, Name: j.Name, Variable: variable, Label: label})
@@ -181,14 +193,28 @@ func (w *Writer) migration(r collect.Run, run remoteRun, affected []recoveryJob,
 		}
 		value, err := w.variable(r.Repo, job.Variable)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w for %s: %v", errUnverifiedRoute, job.Variable, err)
 		}
 		if value != job.Label {
-			return nil, fmt.Errorf("%s currently holds %q, expected %q", job.Variable, value, job.Label)
+			return nil, fmt.Errorf("%w: %s currently holds %q, expected %q", errUnverifiedRoute, job.Variable, value, job.Label)
 		}
 		checked[job.Variable] = true
 	}
 	return plan, nil
+}
+
+func matchesPlan(jobs []recoveryJob, r collect.Run, cancelled bool, plan []MigratedJob) error {
+	affected, err := migrationJobs(jobs, r.Label, cancelled)
+	if err != nil {
+		return err
+	}
+	sort.Slice(affected, func(i, j int) bool { return affected[i].ID < affected[j].ID })
+	if !slices.EqualFunc(plan, affected, func(recorded MigratedJob, live recoveryJob) bool {
+		return recorded.ID == live.ID && recorded.Name == live.Name
+	}) {
+		return fmt.Errorf("affected jobs changed during replacement verification")
+	}
+	return nil
 }
 
 type pickup int
@@ -467,12 +493,12 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets Targets, now time.
 		if err == nil && len(m.Jobs) == 0 {
 			err = fmt.Errorf("saved cancellation has no job and replacement route evidence")
 		}
-		if err == nil && len(targets[m.Repo]) == 0 && now.Sub(m.since()) < recoveryWait {
-			out.Recovery[k] = action + " delayed: repository has no verified eligible replacement route this check"
-			continue
-		}
 		if err == nil {
 			_, err = w.migration(m.Run, run, affected, targets[m.Repo], m.Jobs)
+		}
+		if errors.Is(err, errUnverifiedRoute) {
+			out.Recovery[k] = action + " delayed: " + err.Error()
+			continue
 		}
 		if err != nil {
 			if err := fail(k, m, action+" skipped: "+err.Error()); err != nil {
@@ -480,7 +506,20 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets Targets, now time.
 			}
 			continue
 		}
-		// Recheck after paginated job reads, immediately before recording the POST.
+		jobs, err = w.jobs(m.Run)
+		if err != nil {
+			if err := readError(k, m, err); err != nil {
+				return out, err
+			}
+			continue
+		}
+		if err := matchesPlan(jobs, m.Run, cancelled, m.Jobs); err != nil {
+			if err := fail(k, m, action+" skipped: "+err.Error()); err != nil {
+				return out, err
+			}
+			continue
+		}
+		// The final run check also catches scheduler or attempt changes during the job reads.
 		latest, err := w.run(m.Run)
 		if err != nil {
 			if err := readError(k, m, err); err != nil {
@@ -499,7 +538,7 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets Targets, now time.
 			continue
 		}
 		m.Stage, m.StageAt, m.Problem = forceRequested, now, ""
-		if action == "rerun-failed-jobs" {
+		if cancelled {
 			m.Stage = rerunRequested
 		}
 		if err := save(k, m); err != nil {
@@ -510,7 +549,7 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets Targets, now time.
 			if err := fail(k, m, action+" was not confirmed: "+err.Error()); err != nil {
 				return out, err
 			}
-		} else if action == "force-cancel" {
+		} else if !cancelled {
 			out.Forced = append(out.Forced, k)
 		}
 	}
@@ -553,6 +592,15 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets Targets, now time.
 		}
 		plan, err := w.migration(r, run, affected, targets[r.Repo], nil)
 		if err != nil {
+			out.Recovery[k] = "cancel skipped: " + err.Error()
+			continue
+		}
+		jobs, err = w.jobs(r)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := matchesPlan(jobs, r, false, plan); err != nil {
 			out.Recovery[k] = "cancel skipped: " + err.Error()
 			continue
 		}

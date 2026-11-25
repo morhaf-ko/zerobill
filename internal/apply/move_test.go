@@ -36,6 +36,7 @@ type moveFixture struct {
 	jobError                                       int
 	paginated                                      bool
 	onJobs                                         func()
+	onVariable                                     func()
 	beforePost                                     func(string)
 	writer                                         *Writer
 }
@@ -54,6 +55,9 @@ func newMoveFixture(t *testing.T) *moveFixture {
 				_ = json.NewEncoder(w).Encode(map[string]string{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(f.workflow))})
 				return
 			case "/repos/acme/app/actions/variables/CI_RUNNER":
+				if f.onVariable != nil {
+					f.onVariable()
+				}
 				_ = json.NewEncoder(w).Encode(map[string]string{"value": "hosted-ci"})
 				return
 			}
@@ -586,5 +590,36 @@ func TestMoveLeavesDependentJobsToOperator(t *testing.T) {
 	got := f.move(t, &st, 0, moveRun)
 	if len(f.posts) != 0 || !strings.Contains(got.Recovery[key(moveRun)], "depends on") {
 		t.Fatalf("posts=%v recovery=%v", f.posts, got.Recovery)
+	}
+}
+
+func TestMoveRetriesVerificationAfterTransientRouteFailure(t *testing.T) {
+	f := newMoveFixture(t)
+	st := ownedCancellation()
+	out, err := f.writer.Move(&st, nil, Targets{"acme/app": {"BOT_RUNNER": "hosted-ci"}}, moveTime.Add(9*time.Minute), noop)
+	k := key(moveRun)
+	if err != nil || len(f.posts) != 0 || st.Cancelled[k].NeedsAttention() || !strings.Contains(out.Recovery[k], "delayed") {
+		t.Fatalf("posts=%v move=%+v state=%+v error=%v", f.posts, out, st, err)
+	}
+	if got := f.move(t, &st, 10*time.Minute); len(got.Forced) != 1 || !slices.Equal(f.posts, []string{"force-cancel"}) {
+		t.Fatalf("recovered route did not resume ownership: %+v %v", got, f.posts)
+	}
+}
+
+func TestMoveRechecksAssignmentAfterReadingReplacement(t *testing.T) {
+	for _, owned := range []bool{false, true} {
+		t.Run(fmt.Sprint(owned), func(t *testing.T) {
+			f := newMoveFixture(t)
+			st := State{}
+			if owned {
+				st = ownedCancellation()
+			}
+			f.onVariable = func() { f.jobs[1][0].RunnerID = 22 }
+			got := f.move(t, &st, 5*time.Minute, moveRun)
+			k := key(moveRun)
+			if len(f.posts) != 0 || !strings.Contains(got.Recovery[k]+st.Cancelled[k].Problem, "runner") {
+				t.Fatalf("posts=%v move=%+v state=%+v", f.posts, got, st)
+			}
+		})
 	}
 }

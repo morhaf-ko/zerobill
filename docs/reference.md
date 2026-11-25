@@ -166,7 +166,8 @@ updated according to the normal policy.
 3. After confirmed cancellation, use GitHub's failed-jobs rerun endpoint once.
    The cancelled jobs and their replacement routes must still match the saved
    plan. A changed route, an exhausted reserve, or an unavailable variable blocks
-   the request. GitHub also reschedules dependent jobs, so a declared dependency
+   the request. A failed route read delays the request and keeps ownership for
+   the next check. GitHub also reschedules dependent jobs, so a declared dependency
    on an affected job leaves recovery to the operator.
 4. Track the migrated jobs by name in the next attempt. `rerun` reports that their
    replacement labels were confirmed. `recovery` reports queue or GitHub-side
@@ -192,7 +193,8 @@ queued, inspect GitHub approvals, concurrency, and runner-group access before
 attributing a cause.
 
 GitHub's force-cancel endpoint bypasses conditions such as `always()` and has no
-atomic attempt precondition. Fresh checks reduce but cannot eliminate a race with
+atomic attempt precondition. The controller rechecks assignment after verifying
+the replacement, then rechecks the run. These reads reduce the race with
 external reruns or newly started work. Some GitHub-side orphaned runs cannot be
 cleared even by force cancellation; inspect the linked run and follow
 [GitHub's troubleshooting guidance](https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows).

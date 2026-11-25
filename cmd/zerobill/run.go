@@ -268,6 +268,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		// shows the holds a real run would make.
 		took := !c.apply
 		if write {
+			eligible := c.replacementEligible(rl, states)
 			rl.Written = []string{}
 			for _, repo := range c.repos {
 				if !reads(repo, rt.Variable) {
@@ -282,10 +283,11 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 					l.Errors["write "+repo.Name+"/"+rt.Variable] = err.Error()
 					continue
 				}
-				if c.replacementEligible(rl, states) {
-					if targets[repo.Name] == nil {
-						targets[repo.Name] = map[string]string{}
-					}
+				if targets[repo.Name] == nil {
+					targets[repo.Name] = map[string]string{}
+				}
+				targets[repo.Name][rt.Variable] = ""
+				if eligible {
 					targets[repo.Name][rt.Variable] = d.Label
 				}
 				// A partial write still moves jobs, so it starts the hold.
