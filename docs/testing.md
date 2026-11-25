@@ -70,18 +70,23 @@ Check this sequence with isolated controller config and state:
 3. Run `run --apply` and inspect its log plus the actual `CI_RUNNER` variable.
    Dispatch the acceptance workflow; inspect GitHub's job record to confirm the
    selected labels and successful execution on your self-hosted runner.
-4. Pause `runner` on this isolated controller. Wait for its next successful check;
-   confirm a hosted label was applied and dispatch the workflow again. Verify its
-   actual runner labels and success. This tests policy fallback without powering
-   down a shared machine. Resume the runner and verify self-hosted preference returns.
+4. Pause `runner` on this isolated controller. Wait for its next successful check,
+   verify `paused.runner` in the log, and read back the actual `CI_RUNNER` variable.
+   Confirm hosted free capacity and provider spending limits before dispatching
+   again. Verify actual job labels, runner assignment and execution in GitHub.
+   Resume the runner and verify self-hosted preference returns.
 5. Stop and restart the controller; verify it uses the same config/state and does
    not send another already-recorded low-capacity warning.
 
 Do not consume an allowance to test exhaustion or send alerts to real operator
 webhooks. The local HTTP-fixture journey covers reserve/exhaustion, runner offline,
 low-capacity delivery/retry, restart deduplication and failed reads without spending
-provider minutes. A live hosted job can still be billed; verify provider limits and
-available free capacity before dispatching it.
+provider minutes. A live hosted job can still be billed. When a route uses the
+intentional `zerobill-wait` label, leave the canary undispatched. The label must
+stay unregistered. To inspect a recovery that already happened, compare the
+original and rerun attempts in GitHub. Check the migrated job's name, replacement
+label, runner assignment and started steps. A controller `rerun` log alone
+confirms the label.
 
 ## Release gates
 

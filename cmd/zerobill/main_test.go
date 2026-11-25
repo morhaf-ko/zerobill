@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -110,6 +111,14 @@ func TestRecoveryJourneyWritesTargetsBeforeCancelAndVerifiesRerun(t *testing.T) 
 			vars.ServeHTTP(w, r)
 			return
 		}
+		if r.URL.Path == "/repos/acme/app/contents/.github/workflows/ci.yml" {
+			if r.URL.Query().Get("ref") != "0123456789012345678901234567890123456789" {
+				t.Errorf("workflow lookup was not pinned: %s", r.URL)
+			}
+			raw := []byte("jobs:\n  build:\n    runs-on: ${{ vars.CI_RUNNER }}\n")
+			_ = json.NewEncoder(w).Encode(map[string]string{"encoding": "base64", "content": base64.StdEncoding.EncodeToString(raw)})
+			return
+		}
 		if r.Method == http.MethodPost {
 			action := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 			posts = append(posts, action)
@@ -134,12 +143,12 @@ func TestRecoveryJourneyWritesTargetsBeforeCancelAndVerifiesRerun(t *testing.T) 
 			if attempt == 2 {
 				label = blacksmithLabel
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"jobs": []any{map[string]any{
-				"id": 1, "status": status, "conclusion": conclusion, "labels": []string{label}, "runner_id": 0, "steps": []any{},
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 1, "jobs": []any{map[string]any{
+				"id": attempt, "name": "build", "status": status, "conclusion": conclusion, "labels": []string{label}, "runner_id": 0, "steps": []any{},
 			}}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "conclusion": conclusion, "run_attempt": attempt})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "conclusion": conclusion, "run_attempt": attempt, "path": ".github/workflows/ci.yml", "event": "push", "head_sha": "0123456789012345678901234567890123456789"})
 	}))
 	defer gh.Close()
 	c.a.gh.BaseURL = gh.URL
@@ -749,5 +758,57 @@ func TestLocalStatusFallsBackAfterControllerSnapshotError(t *testing.T) {
 	if err := localStatus(&out, a, now); err != nil || !strings.Contains(out.String(), "1300 min") ||
 		!strings.Contains(out.String(), "Controller assignments unavailable") {
 		t.Fatalf("refresh fallback: %v\n%s", err, out.String())
+	}
+}
+
+func TestOwnedRecoveryObservedWhenRouteWorkFails(t *testing.T) {
+	for _, kind := range []string{"provider read", "total discovery", "partial discovery", "variable write"} {
+		t.Run(kind, func(t *testing.T) {
+			c, vars := newTestController(t, true)
+			var checked, posts int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.Contains(r.URL.Path, "/actions/runs/") && r.Method == http.MethodPost:
+					posts++
+					w.WriteHeader(http.StatusAccepted)
+				case strings.HasSuffix(r.URL.Path, "/actions/runs/42"):
+					checked++
+					fmt.Fprint(w, `{"status":"completed","conclusion":"success","run_attempt":2}`)
+				case strings.HasSuffix(r.URL.Path, "/actions/runs/43"):
+					checked++
+					fmt.Fprint(w, `{"status":"completed","conclusion":"cancelled","run_attempt":1}`)
+				case strings.HasSuffix(r.URL.Path, "/attempts/1/jobs"):
+					fmt.Fprint(w, `{"total_count":1,"jobs":[{"name":"build","id":10,"status":"completed","conclusion":"cancelled","labels":["home-ci"]}]}`)
+				case kind == "variable write" && strings.Contains(r.URL.Path, "/acme/app/actions/variables"):
+					w.WriteHeader(http.StatusBadGateway)
+				default:
+					vars.ServeHTTP(w, r)
+				}
+			}))
+			defer server.Close()
+			c.a.gh.BaseURL = server.URL
+			c.state.Cancelled = map[string]apply.Moved{}
+			for _, id := range []int64{42, 43} {
+				k := fmt.Sprintf("acme/app#%d", id)
+				c.state.Cancelled[k] = apply.Moved{
+					Run: collect.Run{Repo: "acme/app", ID: id, Attempt: 1, Label: "home-ci"},
+					At:  now, Jobs: []apply.MigratedJob{{ID: 10, Name: "build", Variable: "CI_RUNNER", Label: blacksmithLabel}},
+				}
+			}
+			r := result(policy.State{Registered: true})
+			switch kind {
+			case "provider read":
+				r.Errors = map[string]string{"github": "quota read failed"}
+			case "total discovery":
+				c.discoverErr = "repository listing failed"
+			case "partial discovery":
+				c.repos = c.repos[1:]
+				c.workflowErrors = []string{"acme/app: workflow read failed"}
+			}
+			l := step(t, c, time.Minute, r)
+			if checked != 2 || posts != 0 || len(c.state.Rerun) != 1 || l.Recovery["acme/app#43"] == "" {
+				t.Fatalf("reads=%d posts=%d log=%+v state=%+v", checked, posts, l, c.state)
+			}
+		})
 	}
 }

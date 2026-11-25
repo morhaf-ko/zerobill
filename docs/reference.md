@@ -108,7 +108,7 @@ will create one for a job. Selecting the self-hosted label at this point does no
 prove that a machine is online. An online observation and a successful job on that
 runner establish availability; a queue stall triggers the rules below.
 
-- A registered runner with your label is offline, or
+- Matching runners are registered but none are online, or
 - a job has waited for the label longer than `queue_timeout` (default 2 minutes). Runners created per job, such as
   GARM or Actions Runner Controller pools, register only when a job arrives, so this is
   how zerobill notices they are gone. A pool that keeps idle runners, such as GARM with
@@ -142,35 +142,60 @@ The free-capacity and outage limits are explained in the
 ## What `run --apply` does
 
 Each interval it sets `CI_RUNNER` and `BOT_RUNNER` in the repositories that read them,
-writing only values that differ, so a manual edit is corrected. An interval in which any
-read failed writes nothing.
+writing differing values. A failed provider, pause, or complete discovery read
+blocks variable writes for that check. A partial workflow scan omits repositories
+it could not inspect. A failed variable operation is reported for that repository
+and route. Pending recoveries are still read and reported in each of these cases.
 
-`runs-on` is read when a job is queued, so changing a variable does not move an
-already queued job. Once all variables hold the selected labels, zerobill rechecks
-the run attempt and cancels runs whose queued jobs still target the unavailable
-runner. It leaves running or failed jobs alone and preserves successful jobs.
+`runs-on` is evaluated when a job queues. For automatic recovery, zerobill needs a
+fresh queued or in-progress run, an unassigned, unstarted job with only the
+stalled label, and an eligible hosted replacement confirmed in that job's repository
+variable. It reads the workflow at the original commit for `push` and
+`workflow_dispatch` and matches the jobs by their static names. Use a single
+`${{ vars.CI_RUNNER }}` or `${{ vars.BOT_RUNNER }}` label. Fixed labels, group or
+multi-label declarations, conditional expressions, matrix and reusable workflows,
+and other events can leave recovery for the operator. Routing variables are still
+updated according to the normal policy.
 
-Recovery uses the existing check interval and persistent state:
+1. Request normal cancellation once. Already successful, skipped, or neutral jobs
+   can remain in the attempt. Running, failed, assigned, or ambiguous jobs block
+   cancellation.
+2. After at least five minutes, request force cancellation once if the same
+   attempt, same affected jobs, and same verified route still qualify. GitHub
+   waiting, pending, or requested runs remain under GitHub's scheduler.
+3. After confirmed cancellation, use GitHub's failed-jobs rerun endpoint once.
+   The cancelled jobs and their replacement routes must still match the saved
+   plan. A changed route, an exhausted reserve, or an unavailable variable blocks
+   the request. A temporary route read failure delays the request and keeps
+   ownership for the next check. Missing workflow files or denied workflow
+   access require operator attention. GitHub also reschedules dependent jobs,
+   so a declared dependency on an affected job leaves recovery to the operator.
+4. Track the migrated jobs by name in the next attempt. `rerun` reports that their
+   replacement labels were confirmed. `recovery` reports queue or GitHub-side
+   waiting, runner assignment, and observed execution. A matching sibling label
+   does not verify a migrated job. Missing evidence or pickup after the verification
+   window requires inspection of the linked run.
 
-1. Request normal cancellation and wait for confirmed completion.
-2. After at least five minutes, request force cancellation once only if the same
-   attempt still has queued jobs and no job in that attempt has executed. Completed
-   successful jobs also prevent force cancellation. Empty or ambiguous job metadata,
-   changed attempts and deployment/concurrency waits prevent escalation.
-3. After confirmed cancellation, request one rerun of cancelled jobs. Then verify a
-   new attempt and its visible jobs' labels against the applied routes before
-   reporting `rerun`. Unrelated failed jobs are not retried.
+Each request's intent is saved before sending it. Restarts preserve ownership
+and deduplicate requests and confirmations. Recovery with uncertain state stays
+recorded for operator attention, including old state that lacks job identities.
+A configured `notify` hook receives an attention warning once after successful
+delivery. `force_cancel_requested` records that GitHub accepted a request.
 
-Each request's intent is saved before sending it. Restarts do not repeat uncertain
-requests. Force cancellation and rerun verification each have a five-minute wait,
-evaluated on the next successful check. An unresolved recovery remains recorded
-instead of being automatically cancelled again. Logs show `recovery` with the run
-URL, attempt and reason; a configured `notify` hook receives the warning once after
-successful delivery. Failed warning delivery retries on the next successful check.
-`force_cancel_requested` reports GitHub accepting a request, not completion.
+The JSON log reports workflow discovery coverage and `check_delayed_by` when a
+check starts late. Inspect `observed.runner.queue` for runner inventory and queue
+observations. Busy runners, offline runners, and an empty inventory have different
+signals. Visible runners must carry every requested label, and an organization
+inventory cannot establish runner-group access for a repository or workflow.
+Missing, future, or stale job observations leave queue age unknown. A short wait
+with no registration can be a cold start, and a wait beyond `queue_timeout` can
+also indicate a pool outage. Where a runner appears eligible and a job stays
+queued, inspect GitHub approvals, concurrency, and runner-group access before
+attributing a cause.
 
 GitHub's force-cancel endpoint bypasses conditions such as `always()` and has no
-atomic attempt precondition. Fresh checks reduce but cannot eliminate a race with
+atomic attempt precondition. The controller rechecks assignment after verifying
+the replacement, then rechecks the run. These reads reduce the race with
 external reruns or newly started work. Some GitHub-side orphaned runs cannot be
 cleared even by force cancellation; inspect the linked run and follow
 [GitHub's troubleshooting guidance](https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows).

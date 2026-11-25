@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -106,7 +107,7 @@ func TestSelfHostedOrg(t *testing.T) {
 		{"id":20,"status":"in_progress","labels":["home-ci"],"created_at":%q},
 		{"id":21,"status":"queued","labels":["home-ci"],"created_at":%q}]}`, ts(time.Hour), ts(12*time.Minute)))
 
-	s, movable, err := f.collector("acme", "acme/app").selfHosted("home-ci")
+	s, movable, _, err := f.collector("acme", "acme/app").selfHosted("home-ci", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestSelfHostedUserReadsRepositoryRunners(t *testing.T) {
 	f.json("/repos/octo/app/actions/runners", `{"runners":[{"status":"offline","labels":[{"name":"home-ci"}]}]}`)
 	f.json("/repos/octo/app/actions/runs", `{"workflow_runs":[]}`)
 
-	s, movable, err := f.collector("octo", "octo/app").selfHosted("home-ci")
+	s, movable, _, err := f.collector("octo", "octo/app").selfHosted("home-ci", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,5 +319,31 @@ func TestBlacksmithSplitsMonthOverSearchCap(t *testing.T) {
 	}
 	if n := f.hits["/repos/acme/app/actions/runs"]; n != 8 {
 		t.Fatalf("%d run list requests, want 1 capped page plus 7 days", n)
+	}
+}
+
+func TestSelfHostedQueueDiagnosticsDoNotTurnMissingTimeIntoStall(t *testing.T) {
+	f := newFake(t)
+	f.json("/orgs/acme/actions/runners", `{"runners":[{"status":"online","busy":true,"labels":[{"name":"home-ci"},{"name":"linux"}]}]}`)
+	f.json("/repos/acme/app/actions/runs", `{"workflow_runs":[{"id":1,"run_attempt":1,"status":"in_progress"},{"id":2,"run_attempt":1,"status":"waiting"}]}`)
+	f.json("/repos/acme/app/actions/runs/1/jobs", fmt.Sprintf(`{"jobs":[
+		{"id":1,"status":"queued","labels":["home-ci","arm64"]},
+		{"id":2,"status":"queued","labels":["home-ci","linux"],"created_at":%q},
+		{"id":3,"status":"pending","labels":["home-ci"]},
+		{"id":4,"status":"queued","labels":["home-ci","linux"],"created_at":%q,"runner_group_id":5}
+	]}`, ts(time.Minute), ts(-time.Minute)))
+	f.json("/repos/acme/app/actions/runs/2/jobs", fmt.Sprintf(`{"jobs":[{"id":5,"status":"queued","labels":["home-ci"],"created_at":%q}]}`, ts(time.Hour)))
+	r := f.collector("acme", "acme/app").Observe([]policy.Provider{{Name: "runner", Label: "home-ci", Kind: policy.SelfHosted}})
+	if s := r.States["runner"]; s.OldestQueued != time.Minute {
+		t.Fatalf("invalid or stale queue data tainted oldest queue: %+v", s)
+	}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"busy", "missing", "future", "extra labels", "group access", "GitHub"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("missing %q in %s", want, raw)
+		}
 	}
 }

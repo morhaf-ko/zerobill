@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -122,26 +123,129 @@ func workflows(gh *github.Client, repo string) ([]decl, error) {
 		if f.Type != "file" || !(strings.HasSuffix(f.Name, ".yml") || strings.HasSuffix(f.Name, ".yaml")) {
 			continue
 		}
-		var file struct {
-			Content, Encoding string
-		}
-		if err := gh.Get("/repos/"+repo+"/contents/"+escapePath(f.Path), &file); err != nil {
+		raw, err := workflowFile(gh, repo, f.Path, "")
+		if err != nil {
 			return nil, err
 		}
-		if file.Encoding != "base64" {
-			return nil, fmt.Errorf("%s/%s: unexpected encoding %q", repo, f.Path, file.Encoding)
-		}
-		raw, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(file.Content, "\n", ""))
-		if err != nil {
-			return nil, fmt.Errorf("%s/%s: %w", repo, f.Path, err)
-		}
-		decls, err := parseRunsOn(f.Path, string(raw))
+		decls, err := parseRunsOn(f.Path, raw)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", repo, err)
 		}
 		out = append(out, decls...)
 	}
 	return out, nil
+}
+
+// ErrWorkflowRead identifies a transient workflow read failure.
+var ErrWorkflowRead = errors.New("workflow read failed")
+
+func workflowFile(gh *github.Client, repo, path, ref string) (string, error) {
+	endpoint := "/repos/" + repo + "/contents/" + escapePath(path)
+	if ref != "" {
+		endpoint += "?ref=" + url.QueryEscape(ref)
+	}
+	var file struct {
+		Content, Encoding string
+	}
+	if err := gh.Get(endpoint, &file); err != nil {
+		var status *github.StatusError
+		if errors.As(err, &status) && status.Code < 500 &&
+			status.Code != http.StatusRequestTimeout && status.Code != http.StatusTooManyRequests && !github.IsRateLimited(err) {
+			return "", err
+		}
+		return "", fmt.Errorf("%w: %w", ErrWorkflowRead, err)
+	}
+	if file.Encoding != "base64" {
+		return "", fmt.Errorf("%s/%s: unexpected encoding %q", repo, path, file.Encoding)
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(file.Content, "\n", ""))
+	if err != nil {
+		return "", fmt.Errorf("%s/%s: %w", repo, path, err)
+	}
+	return string(raw), nil
+}
+
+var commitSHA = regexp.MustCompile(`^[[:xdigit:]]{40}$`)
+var workflowPath = regexp.MustCompile(`^\.github/workflows/[^/@]+\.ya?ml$`)
+var directVariable = regexp.MustCompile(`^\$\{\{\s*vars\.(CI_RUNNER|BOT_RUNNER)\s*\}\}$`)
+
+type JobRoute struct {
+	Variable  string
+	Dependent string
+}
+
+// JobRoutes resolves static GitHub job names to single repository-variable labels.
+func JobRoutes(gh *github.Client, repo, path, sha, event string) (map[string]JobRoute, error) {
+	if (event != "push" && event != "workflow_dispatch") || !commitSHA.MatchString(sha) || !workflowPath.MatchString(path) {
+		return nil, fmt.Errorf("workflow revision cannot be verified for event %q", event)
+	}
+	raw, err := workflowFile(gh, repo, path, sha)
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) == 0 {
+		return nil, fmt.Errorf("workflow is empty")
+	}
+	jobs := child(doc.Content[0], "jobs")
+	if jobs == nil || jobs.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("workflow jobs cannot be verified")
+	}
+	routes := map[string]JobRoute{}
+	names := map[string]string{}
+	dependents := map[string]string{}
+	for i := 0; i < len(jobs.Content); i += 2 {
+		id, job := jobs.Content[i].Value, jobs.Content[i+1]
+		if job.Kind != yaml.MappingNode || child(job, "<<") != nil || child(job, "uses") != nil || child(job, "strategy") != nil {
+			return nil, fmt.Errorf("job %q has an unsupported declaration for recovery", id)
+		}
+		name := id
+		if n := child(job, "name"); n != nil {
+			if n.Kind != yaml.ScalarNode || n.Tag != "!!str" || n.Value == "" || strings.Contains(n.Value, "${{") {
+				return nil, fmt.Errorf("job %q has an unresolved name", id)
+			}
+			name = n.Value
+		}
+		if _, exists := routes[name]; exists {
+			return nil, fmt.Errorf("workflow has duplicate job name %q", name)
+		}
+		names[id] = name
+		var route JobRoute
+		if n := child(job, "runs-on"); n != nil && n.Kind == yaml.ScalarNode {
+			if match := directVariable.FindStringSubmatch(n.Value); match != nil {
+				route.Variable = match[1]
+			}
+		}
+		routes[name] = route
+		if n := child(job, "needs"); n != nil {
+			nodes := n.Content
+			if n.Kind == yaml.ScalarNode {
+				nodes = []*yaml.Node{n}
+			}
+			if n.Kind != yaml.SequenceNode && n.Kind != yaml.ScalarNode {
+				return nil, fmt.Errorf("job %q has unresolved dependencies", name)
+			}
+			for _, need := range nodes {
+				if need.Kind != yaml.ScalarNode || need.Tag != "!!str" || strings.Contains(need.Value, "${{") {
+					return nil, fmt.Errorf("job %q has unresolved dependencies", name)
+				}
+				dependents[need.Value] = name
+			}
+		}
+	}
+	for id, dependent := range dependents {
+		name, exists := names[id]
+		if !exists {
+			return nil, fmt.Errorf("job %q has an unknown dependency %q", dependent, id)
+		}
+		route := routes[name]
+		route.Dependent = dependent
+		routes[name] = route
+	}
+	return routes, nil
 }
 
 func escapePath(p string) string {
@@ -167,6 +271,7 @@ type Repo struct {
 type Result struct {
 	Repos         []Repo
 	PrivateRepos  int
+	Scanned       int
 	ExampleRepo   string
 	AccessProblem bool
 	RateLimited   bool
@@ -186,24 +291,29 @@ func Discover(gh *github.Client, owner string, org bool) (Result, error) {
 	}
 	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
 	for _, repo := range repos {
+		if repo.Private {
+			r.PrivateRepos++
+		}
+	}
+	for _, repo := range repos {
 		if !repo.Private {
 			continue
 		}
-		r.PrivateRepos++
 		if r.ExampleRepo == "" {
 			r.ExampleRepo = repo.Name
 		}
 		name := repo.Name
 		decls, err := workflows(gh, name)
 		if err != nil {
+			r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", name, err))
 			if errors.Is(err, context.DeadlineExceeded) {
 				return r, fmt.Errorf("workflow scan timed out at %s: %w", name, err)
 			}
-			r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", name, err))
 			r.AccessProblem = r.AccessProblem || github.IsAccessDenied(err)
 			r.RateLimited = r.RateLimited || github.IsRateLimited(err)
 			continue
 		}
+		r.Scanned++
 		var vars []string
 		for _, d := range decls {
 			for _, v := range d.Vars {
