@@ -7,7 +7,8 @@
 ```yaml
 owner: your-org
 self_hosted_label: home-ci
-reserve_percent: 10
+github_reserve_percent: 5
+blacksmith_reserve_percent: 0
 ```
 
 Run `zerobill init` to create it interactively. The owner is required; self-hosted capacity
@@ -19,16 +20,22 @@ existing configs untouched. It does not sign in to GitHub or change workflows.
 | `owner` | Required. The GitHub user or organization whose private repositories zerobill routes. |
 | `self_hosted_label` | Optional GitHub Actions label shared by self-hosted machines zerobill may select. Find it in Settings → Actions → Runners. |
 | `blacksmith` | `true` to use Blacksmith's free minutes too. |
-| `reserve_percent` | Percentage kept back from each free tier. Integer from 0 to 99; defaults to 10 when omitted. Zero uses the full allowance. |
+| `github_reserve_percent` | Percentage kept back from the GitHub Actions allowance. Integer from 0 to 99. Defaults to 5. |
+| `blacksmith_reserve_percent` | Percentage kept back from the Blacksmith allowance. Integer from 0 to 99. Defaults to 0, which uses the full allowance. |
 | `check_interval` | Availability and usage polling interval, default `5m`; accepts `1m` to `1h`. Restart the service after config changes. |
 | `queue_timeout` | Treat a self-hosted pool as unavailable once a job waits longer, default `2m`; accepts `1m` to `1h`. |
-| `alert_remaining_percent` | Warn at this percentage of each full hosted allowance remaining. Default 20; integer 0–99; 0 disables warnings. Choose a value above the reserve for advance notice. |
+| `alert_remaining_percent` | Warn at this percentage of each full hosted allowance remaining. Default 20; integer 0–99; 0 disables warnings. Choose a value above the reserves of enabled providers for advance notice. |
 | `notify` | A URL told whenever a variable's choice changes: an [ntfy](https://ntfy.sh/) topic, a Discord or Slack webhook, or anything that accepts a plain-text POST. Without `--apply` the message ends in `[log only]`, and every restart reports the first choice again, since nothing is saved. Routing-change send failures are logged and not retried. Low-capacity warnings are sent only with `--apply` and complete reads; successful warnings are saved once per provider, owner and UTC month. Failed low-capacity sends retry on the next successful check. Changing the threshold or webhook does not reset a sent warning. |
 
 Containers can set `ZEROBILL_OWNER`, `ZEROBILL_SELF_HOSTED_LABEL`, `ZEROBILL_BLACKSMITH` (`true`),
-`ZEROBILL_RESERVE_PERCENT`, `ZEROBILL_ALERT_REMAINING_PERCENT`,
+`ZEROBILL_GITHUB_RESERVE_PERCENT`, `ZEROBILL_BLACKSMITH_RESERVE_PERCENT`, `ZEROBILL_ALERT_REMAINING_PERCENT`,
 `ZEROBILL_CHECK_INTERVAL`, `ZEROBILL_QUEUE_TIMEOUT` and `ZEROBILL_NOTIFY` instead; when `ZEROBILL_OWNER` is set
-the file is not read. The reserve has the same default and range.
+the file is not read. Reserve defaults and ranges are the same in both forms.
+
+An explicit legacy `reserve_percent` or `ZEROBILL_RESERVE_PERCENT` still sets the
+reserve for both hosted providers. A provider-specific setting overrides it for
+that provider. To adopt the new defaults, remove the legacy setting and its
+Compose fallback if your copy still defaults it to 10.
 
 Rename old `runner` / `ZEROBILL_RUNNER` settings to `self_hosted_label` /
 `ZEROBILL_SELF_HOSTED_LABEL`. Old names fail with an explicit migration message.
@@ -61,7 +68,7 @@ API. Its usage estimate comes from GitHub Actions job labels and durations.
 | `CI_RUNNER` | Usable self-hosted capacity first, otherwise the less-used hosted allowance |
 | `BOT_RUNNER` | Optional hosted-first policy, sharing available hosted allowances |
 | Free minutes | GitHub: 2,000 on Free, 3,000 on Pro and Team, read from your plan. Blacksmith: 3,000. |
-| Reserve | Stop selecting a free tier at its configured limit: allowance × (100 − `reserve_percent`) / 100 |
+| Reserve | Stop selecting a free tier at its configured limit: allowance × (100 − the provider’s reserve percentage) / 100 |
 | Sharing | Among usable free tiers, the one with the smallest share used, so all last the month |
 | Nothing free | Jobs wait for your runner, or queue on reserved label `zerobill-wait` without one; never assign this label to a runner |
 | Interval | `check_interval`, default 5 minutes |
@@ -71,7 +78,7 @@ API. Its usage estimate comes from GitHub Actions job labels and durations.
 zerobill compares `used_minutes / usable_allowance`, where usable allowance is the
 monthly allowance after the reserve. It selects the lower fraction, retaining a
 usable hosted choice for 15 minutes to avoid switching on every check. For example,
-900 of 1,800 GitHub minutes and 1,350 of 2,700 Blacksmith minutes are both 50% used.
+950 of 1,900 GitHub minutes and 1,500 of 3,000 Blacksmith minutes are both 50% used.
 Ties choose Blacksmith when enabled. There is currently no configurable hosted order.
 
 Proportional sharing is the default recommendation: it keeps capacity available in
@@ -185,12 +192,12 @@ Commands read the config, credential and state on the machine where they execute
 A laptop command does not control an instance on your VPS. Run commands there over
 SSH, or use `docker compose exec zerobill zerobill status` and
 `docker compose exec zerobill zerobill pause runner 7d` in its Compose directory.
-`status` reads the local snapshot without GitHub credentials. It shows the last
-recorded assignment, remaining free minutes after the reserve, and the age of the
-check. After upgrading, an applied controller check records assignments for
+`status` reads the local snapshot without GitHub credentials. Its capacity table shows each provider’s usage, reserve and remaining free minutes.
+The routing table shows the last applied runner and any recommendation supported by
+a fresh, complete check. The heading shows the age of the check. After upgrading, an applied controller check records assignments for
 the configured owner. A check older than three check intervals is stale. Minutes from a previous
-UTC month are unavailable. `status --refresh` performs live reads and reports setup
-and access details. A successful refresh can update displayed usage while the
+UTC month are unavailable. `status --refresh` performs live reads and adds month-end
+projections, setup checks and access details. A successful refresh can update displayed usage while the
 applied controller supplies assignments and workflow coverage. Check controller logs for write
 errors or recovery details.
 

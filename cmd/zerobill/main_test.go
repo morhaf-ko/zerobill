@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -25,11 +26,11 @@ import (
 var now = time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 
 func TestBuild(t *testing.T) {
-	providers, routes := build(&config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme"}, 2000)
+	providers, routes := build(&config.Config{GitHubReservePercent: 10, BlacksmithReservePercent: 10, Owner: "acme"}, 2000)
 	if len(providers) != 1 || routes[0].Fallback.Name != "waiting" || len(routes[1].Providers) != 1 {
 		t.Fatalf("GitHub only: %+v %+v", providers, routes)
 	}
-	providers, routes = build(&config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}, 3000)
+	providers, routes = build(&config.Config{GitHubReservePercent: 10, BlacksmithReservePercent: 10, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}, 3000)
 	var names []string
 	for _, p := range routes[0].Providers {
 		names = append(names, p.Name)
@@ -175,14 +176,56 @@ func TestRecoveryJourneyWritesTargetsBeforeCancelAndVerifiesRerun(t *testing.T) 
 	}
 }
 
+func TestProviderReserves(t *testing.T) {
+	for _, tt := range []struct {
+		name, yaml, legacy, github, blacksmith string
+		wantGitHub, wantBlacksmith             int
+	}{
+		{name: "defaults", wantGitHub: 5},
+		{name: "legacy", yaml: "reserve_percent: 10\n", legacy: "10", wantGitHub: 10, wantBlacksmith: 10},
+		{name: "override legacy with zero", yaml: "reserve_percent: 10\ngithub_reserve_percent: 0\n", legacy: "10", github: "0", wantBlacksmith: 10},
+		{name: "override Blacksmith only", yaml: "blacksmith_reserve_percent: 25\n", blacksmith: "25", wantGitHub: 5, wantBlacksmith: 25},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("owner: acme\nblacksmith: true\n"+tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			file, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("ZEROBILL_OWNER", "acme")
+			t.Setenv("ZEROBILL_BLACKSMITH", "true")
+			t.Setenv("ZEROBILL_RESERVE_PERCENT", tt.legacy)
+			t.Setenv("ZEROBILL_GITHUB_RESERVE_PERCENT", tt.github)
+			t.Setenv("ZEROBILL_BLACKSMITH_RESERVE_PERCENT", tt.blacksmith)
+			env, _, err := config.FromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cfg := range []*config.Config{file, env} {
+				providers, _ := build(cfg, 2000)
+				if providers[0].ReservePercent != tt.wantBlacksmith || providers[1].ReservePercent != tt.wantGitHub {
+					t.Fatalf("got Blacksmith %d%% and GitHub %d%%, want %d%% and %d%%", providers[0].ReservePercent, providers[1].ReservePercent, tt.wantBlacksmith, tt.wantGitHub)
+				}
+			}
+		})
+	}
+}
+
 func TestConfiguredReserveRoutesAndHolds(t *testing.T) {
 	for _, reserve := range []int{0, 25, 99} {
-		_, routes := build(&config.Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, ReservePercent: reserve}, 2000)
+		_, routes := build(&config.Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, GitHubReservePercent: 99 - reserve, BlacksmithReservePercent: reserve}, 2000)
 		for _, rt := range routes {
 			states := map[string]policy.State{"runner": {Registered: true}}
 			for _, p := range rt.Providers {
 				if p.Kind == policy.Metered {
-					want := p.Monthly * float64(100-reserve) / 100
+					percent := reserve
+					if p.Name == "github" {
+						percent = 99 - reserve
+					}
+					want := p.Monthly * float64(100-percent) / 100
 					if p.Limit() != want {
 						t.Fatalf("reserve %d, provider %s limit %v, want %v", reserve, p.Name, p.Limit(), want)
 					}
@@ -245,7 +288,7 @@ func newTestController(t *testing.T, write bool) (*controller, *variables) {
 	t.Cleanup(srv.Close)
 	gh := github.New("t")
 	gh.BaseURL = srv.URL
-	a := &app{cfg: &config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}, gh: gh, stateDir: t.TempDir()}
+	a := &app{cfg: &config.Config{GitHubReservePercent: 10, BlacksmithReservePercent: 10, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}, gh: gh, stateDir: t.TempDir()}
 	a.providers, a.routes = build(a.cfg, 2000)
 	c, err := newController(a, write)
 	if err != nil {
@@ -438,7 +481,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestRender(t *testing.T) {
-	a := &app{cfg: &config.Config{ReservePercent: config.DefaultReservePercent, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}}
+	a := &app{cfg: &config.Config{GitHubReservePercent: 5, BlacksmithReservePercent: 10, Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true}}
 	a.providers, a.routes = build(a.cfg, 2000)
 	states := map[string]policy.State{"runner": {Online: true}, "blacksmith": {UsedMinutes: 1200}, "github": {UsedMinutes: 200}}
 	found := discover.Result{Repos: []discover.Repo{{Name: "acme/app"}}, Fixed: []string{"acme/app .github/workflows/ci.yml:5: ubuntu-latest"}}
@@ -450,7 +493,7 @@ func TestRender(t *testing.T) {
 	if strings.Contains(out.String(), "\nBOT_RUNNER") {
 		t.Fatalf("unused bot route shown: %s", out.String())
 	}
-	for _, want := range []string{"20% of the month", "6000 min, runs out 14 Nov", "1500 min", "CI_RUNNER  home-ci", "fixed runner, change to ${{ vars.CI_RUNNER }}: acme/app"} {
+	for _, want := range []string{"20% of the month", "6000 min, runs out 14 Nov", "RESERVE", "1500 min", "1700 min", "CI_RUNNER  home-ci", "fixed runner, change to ${{ vars.CI_RUNNER }}: acme/app"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q in:\n%s", want, out.String())
 		}
@@ -625,9 +668,9 @@ func TestLocalStatusSnapshot(t *testing.T) {
 		name, want, absent string
 		at                 time.Time
 	}{
-		{"fresh", "Blacksmith: 420 free min left", "BOT_RUNNER", now.Add(time.Minute)},
-		{"new month", "Blacksmith: unavailable", "free min left", now.Add(30 * time.Minute)},
-		{"stale", "Run zerobill status --refresh", "Would use", now.Add(20 * time.Minute)},
+		{"fresh", "720 min", "BOT_RUNNER", now.Add(time.Minute)},
+		{"new month", "Unavailable", "2280 min", now.Add(30 * time.Minute)},
+		{"stale", "Run zerobill status --refresh", "least used free tier", now.Add(20 * time.Minute)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
@@ -635,7 +678,7 @@ func TestLocalStatusSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !strings.Contains(out.String(), tt.want) || strings.Contains(out.String(), tt.absent) ||
-				!strings.Contains(out.String(), "CI_RUNNER: no recorded assignment") || strings.Contains(out.String(), "other-owner-runner") {
+				!strings.Contains(out.String(), "LAST APPLIED") || !strings.Contains(out.String(), "No assignment") || strings.Contains(out.String(), "other-owner-runner") {
 				t.Fatal(out.String())
 			}
 		})
@@ -660,8 +703,8 @@ func TestLocalStatusUsesFreshUsageAndControllerAssignments(t *testing.T) {
 		at   time.Time
 		want string
 	}{
-		{now.Add(-time.Second), "1000 free min left"},
-		{now.Add(time.Second), "1200 free min left"},
+		{now.Add(-time.Second), "1100 min"},
+		{now.Add(time.Second), "1300 min"},
 	} {
 		refresh.Checked = tt.at
 		if err := saveStatus(a.refreshPath(), refresh); err != nil {
@@ -671,7 +714,7 @@ func TestLocalStatusUsesFreshUsageAndControllerAssignments(t *testing.T) {
 		if err := localStatus(&out, a, now.Add(time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{tt.want, "CI_RUNNER: " + githubLabel + " (last applied)", "last controller check reported problems"} {
+		for _, want := range []string{tt.want, "CI_RUNNER  " + githubLabel, "last controller check reported problems"} {
 			if !strings.Contains(out.String(), want) {
 				t.Fatalf("missing %q in %s", want, out.String())
 			}
@@ -684,7 +727,7 @@ func TestLocalStatusUsesFreshUsageAndControllerAssignments(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := localStatus(&out, a, now.Add(time.Second)); err != nil || strings.Contains(out.String(), "Would use") {
+	if err := localStatus(&out, a, now.Add(time.Second)); err != nil || strings.Contains(out.String(), "1300 free minutes left") {
 		t.Fatalf("recommendation with stale controller coverage: %v\n%s", err, out.String())
 	}
 }
@@ -703,7 +746,7 @@ func TestLocalStatusFallsBackAfterControllerSnapshotError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := localStatus(&out, a, now); err != nil || !strings.Contains(out.String(), "1200 free min left") ||
+	if err := localStatus(&out, a, now); err != nil || !strings.Contains(out.String(), "1300 min") ||
 		!strings.Contains(out.String(), "Controller assignments unavailable") {
 		t.Fatalf("refresh fallback: %v\n%s", err, out.String())
 	}

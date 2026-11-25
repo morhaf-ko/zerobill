@@ -103,7 +103,7 @@ func TestIncompleteStatus(t *testing.T) {
 				t.Fatalf("status error: %v", err)
 			}
 			text := out.String()
-			for _, want := range []string{"Status incomplete", "ada via GITHUB_TOKEN", "recommendations are withheld", tt.want} {
+			for _, want := range []string{"Status incomplete", "CHECK", "RESULT", "ada via GITHUB_TOKEN", "recommendations are withheld", tt.want} {
 				if !strings.Contains(text, want) {
 					t.Fatalf("missing %q: %s", want, text)
 				}
@@ -138,7 +138,7 @@ func TestConnectedStatusStopsBeforeUsageWithoutPrivateRepos(t *testing.T) {
 	defer srv.Close()
 	gh := github.New("fixture-token")
 	gh.BaseURL = srv.URL
-	a := &app{cfg: &config.Config{Owner: "acme", Blacksmith: true, ReservePercent: 10}, gh: gh, stateDir: t.TempDir(), authSource: "GitHub CLI"}
+	a := &app{cfg: &config.Config{Owner: "acme", Blacksmith: true, GitHubReservePercent: 10, BlacksmithReservePercent: 10}, gh: gh, stateDir: t.TempDir(), authSource: "GitHub CLI"}
 	if err := a.connect(); err != nil {
 		t.Fatal(err)
 	}

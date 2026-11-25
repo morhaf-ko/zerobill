@@ -111,7 +111,7 @@ Installing the CLI does not start a service. Keep that process running, or use t
 and authenticate on that machine; a laptop command does not control a VPS instance.
 Run only one applied controller per GitHub owner.
 
-Run `zerobill status` for the last applied runner and free minutes left. It reads
+Run `zerobill status` for tables showing capacity, reserves, and the last applied runner. It reads
 local state without contacting GitHub. Use `zerobill status --refresh` for live
 usage and setup diagnostics.
 
@@ -150,7 +150,8 @@ owner: your-org
 # Enable after installing the Blacksmith GitHub App.
 # blacksmith: false
 
-# reserve_percent: 10
+# github_reserve_percent: 5
+# blacksmith_reserve_percent: 0
 # alert_remaining_percent: 20
 # check_interval: 5m
 # queue_timeout: 2m
@@ -166,8 +167,8 @@ ranges and environment settings. Upgrading from v0.3.5 or earlier requires renam
 
 1. Prefer usable matching self-hosted capacity.
 2. Otherwise select the hosted provider with the lowest fraction of its usable
-   allowance consumed. With the default 10% reserve, an allowance of 2,000 minutes
-   provides 1,800 usable minutes; 3,000 provides 2,700.
+   allowance consumed. By default, a 5% reserve leaves 1,900 of 2,000 GitHub
+   minutes usable, and a 0% reserve leaves all 3,000 Blacksmith minutes usable.
 3. Stop selecting a tier at its reserve. When no hosted capacity remains, jobs wait
    on the self-hosted label or on reserved label `zerobill-wait` without self-hosting.
 
@@ -178,8 +179,8 @@ marks that capacity unavailable. [Availability rules](docs/reference.md#how-a-ru
 explain retry and warm-pool behavior.
 
 Configure `notify` for routing-change messages and low-capacity warnings. The
-default warning is at 20% of the full allowance remaining, ahead of the 10% reserve.
-Both thresholds are configurable. [Alert details](docs/reference.md#config) include
+default warning is at 20% of each provider’s full allowance remaining. The warning
+threshold and both reserves are configurable. [Alert details](docs/reference.md#config) include
 restart deduplication and delivery behavior.
 
 zerobill reduces paid overflow risk; it cannot guarantee zero charges. Usage may

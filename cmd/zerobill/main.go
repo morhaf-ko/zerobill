@@ -45,8 +45,9 @@ usage:
   zerobill version
 
 Config: ~/.config/zerobill/config.yaml; run zerobill init for commented options.
-Optional: self_hosted_label, blacksmith, reserve_percent, alert_remaining_percent,
-check_interval, queue_timeout and notify; or matching ZEROBILL_* environment variables.
+Optional: self_hosted_label, blacksmith, github_reserve_percent, blacksmith_reserve_percent,
+alert_remaining_percent, check_interval, queue_timeout and notify.
+Containers can use matching ZEROBILL_* environment variables.
 GitHub access: GITHUB_TOKEN, else the GitHub CLI login (gh auth token).`
 
 func main() {
@@ -205,9 +206,9 @@ const (
 func build(cfg *config.Config, githubMinutes float64) ([]policy.Provider, []policy.Route) {
 	var hosted []policy.Provider
 	if cfg.Blacksmith {
-		hosted = append(hosted, policy.Provider{Name: "blacksmith", Label: blacksmithLabel, Kind: policy.Metered, Monthly: blacksmithFree, ReservePercent: cfg.ReservePercent})
+		hosted = append(hosted, policy.Provider{Name: "blacksmith", Label: blacksmithLabel, Kind: policy.Metered, Monthly: blacksmithFree, ReservePercent: cfg.BlacksmithReservePercent})
 	}
-	github := policy.Provider{Name: "github", Label: githubLabel, Kind: policy.Metered, Monthly: githubMinutes, ReservePercent: cfg.ReservePercent}
+	github := policy.Provider{Name: "github", Label: githubLabel, Kind: policy.Metered, Monthly: githubMinutes, ReservePercent: cfg.GitHubReservePercent}
 	hosted = append(hosted, github)
 	ci, fallback := hosted, policy.Provider{Name: "waiting", Label: config.WaitingLabel}
 	if cfg.SelfHostedLabel != "" {

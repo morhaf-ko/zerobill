@@ -34,7 +34,7 @@ func TestLoad(t *testing.T) {
 		return p
 	}
 	c, err := Load(write("owner: acme\nself_hosted_label: home-ci\nblacksmith: true\n"))
-	if err != nil || *c != (Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, ReservePercent: DefaultReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent, CheckInterval: DefaultCheckInterval, QueueTimeout: 2 * time.Minute}) {
+	if err != nil || *c != (Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, GitHubReservePercent: DefaultGitHubReservePercent, BlacksmithReservePercent: DefaultBlacksmithReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent, CheckInterval: DefaultCheckInterval, QueueTimeout: 2 * time.Minute}) {
 		t.Fatalf("got %+v %v", c, err)
 	}
 	c, err = Load(write("owner: acme\nqueue_timeout: 7m\n"))
@@ -68,7 +68,7 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv("ZEROBILL_BLACKSMITH", "true")
 	t.Setenv("ZEROBILL_NOTIFY", "https://ntfy.sh/x")
 	c, ok, err := FromEnv()
-	if !ok || err != nil || *c != (Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, Notify: "https://ntfy.sh/x", ReservePercent: DefaultReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent, CheckInterval: DefaultCheckInterval, QueueTimeout: 2 * time.Minute}) {
+	if !ok || err != nil || *c != (Config{Owner: "acme", SelfHostedLabel: "home-ci", Blacksmith: true, Notify: "https://ntfy.sh/x", GitHubReservePercent: DefaultGitHubReservePercent, BlacksmithReservePercent: DefaultBlacksmithReservePercent, AlertRemainingPercent: DefaultAlertRemainingPercent, CheckInterval: DefaultCheckInterval, QueueTimeout: 2 * time.Minute}) {
 		t.Fatalf("got %+v %v %v", c, ok, err)
 	}
 	t.Setenv("ZEROBILL_QUEUE_TIMEOUT", "7m")
@@ -88,7 +88,7 @@ func TestReservePercent(t *testing.T) {
 		want  int
 		valid bool
 	}{
-		{"", 10, true}, {"0", 0, true}, {"25", 25, true}, {"99", 99, true},
+		{"", 5, true}, {"0", 0, true}, {"25", 25, true}, {"99", 99, true},
 		{"-1", 0, false}, {"100", 0, false}, {"1.5", 0, false}, {"1.0", 0, false}, {".nan", 0, false}, {"ten", 0, false},
 	} {
 		t.Run("value="+tt.value, func(t *testing.T) {
@@ -97,7 +97,7 @@ func TestReservePercent(t *testing.T) {
 			t.Setenv("ZEROBILL_NOTIFY", "")
 			t.Setenv("ZEROBILL_RESERVE_PERCENT", tt.value)
 			c, _, err := FromEnv()
-			if (err == nil) != tt.valid || (err == nil && c.ReservePercent != tt.want) {
+			if (err == nil) != tt.valid || (err == nil && (c.GitHubReservePercent != tt.want || tt.value != "" && c.BlacksmithReservePercent != tt.want)) {
 				t.Fatalf("env: %+v %v", c, err)
 			}
 			body := "owner: acme\n"
@@ -109,7 +109,7 @@ func TestReservePercent(t *testing.T) {
 				t.Fatal(err)
 			}
 			c, err = Load(path)
-			if (err == nil) != tt.valid || (err == nil && c.ReservePercent != tt.want) {
+			if (err == nil) != tt.valid || (err == nil && (c.GitHubReservePercent != tt.want || tt.value != "" && c.BlacksmithReservePercent != tt.want)) {
 				t.Fatalf("file: %+v %v", c, err)
 			}
 		})
@@ -133,6 +133,12 @@ func TestOptionalSettings(t *testing.T) {
 		key, env, value string
 		valid           bool
 	}{
+		{"github_reserve_percent", "ZEROBILL_GITHUB_RESERVE_PERCENT", "0", true},
+		{"github_reserve_percent", "ZEROBILL_GITHUB_RESERVE_PERCENT", "100", false},
+		{"github_reserve_percent", "ZEROBILL_GITHUB_RESERVE_PERCENT", "1.0", false},
+		{"blacksmith_reserve_percent", "ZEROBILL_BLACKSMITH_RESERVE_PERCENT", "99", true},
+		{"blacksmith_reserve_percent", "ZEROBILL_BLACKSMITH_RESERVE_PERCENT", "-1", false},
+		{"blacksmith_reserve_percent", "ZEROBILL_BLACKSMITH_RESERVE_PERCENT", "null", false},
 		{"alert_remaining_percent", "ZEROBILL_ALERT_REMAINING_PERCENT", "5", true},
 		{"alert_remaining_percent", "ZEROBILL_ALERT_REMAINING_PERCENT", "0", true},
 		{"alert_remaining_percent", "ZEROBILL_ALERT_REMAINING_PERCENT", "100", false},
@@ -192,7 +198,7 @@ func TestCommentedConfigRoundTrip(t *testing.T) {
 			c.Owner = "owner: quoted"
 			c.SelfHostedLabel, c.Blacksmith = "home-ci", true
 			c.CheckInterval, c.QueueTimeout = time.Minute, 7*time.Minute
-			c.ReservePercent, c.AlertRemainingPercent = 0, 5
+			c.GitHubReservePercent, c.BlacksmithReservePercent, c.AlertRemainingPercent = 0, 12, 5
 			c.Notify = "https://ntfy.sh/topic#fragment"
 		}
 		path := filepath.Join(t.TempDir(), "config.yaml")
@@ -204,7 +210,7 @@ func TestCommentedConfigRoundTrip(t *testing.T) {
 			t.Fatalf("round trip: %+v %v want %+v", got, err, c)
 		}
 		raw, _ := os.ReadFile(path)
-		for _, field := range []string{"self_hosted_label", "blacksmith", "reserve_percent", "alert_remaining_percent", "check_interval", "queue_timeout", "notify"} {
+		for _, field := range []string{"self_hosted_label", "blacksmith", "github_reserve_percent", "blacksmith_reserve_percent", "alert_remaining_percent", "check_interval", "queue_timeout", "notify"} {
 			if !full && !strings.Contains(string(raw), "# "+field+":") {
 				t.Fatalf("missing commented option %s", field)
 			}
