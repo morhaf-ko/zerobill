@@ -28,6 +28,7 @@ func noop() error { return nil }
 type moveFixture struct {
 	run                                            remoteRun
 	workflow                                       string
+	workflowError                                  int
 	jobs                                           map[int][]recoveryJob
 	posts                                          []string
 	cancelCompletes, forceCompletes, rerunAdvances bool
@@ -52,6 +53,10 @@ func newMoveFixture(t *testing.T) *moveFixture {
 		if r.Method == http.MethodGet {
 			switch r.URL.Path {
 			case "/repos/acme/app/contents/.github/workflows/ci.yml":
+				if f.workflowError != 0 {
+					w.WriteHeader(f.workflowError)
+					return
+				}
 				_ = json.NewEncoder(w).Encode(map[string]string{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(f.workflow))})
 				return
 			case "/repos/acme/app/actions/variables/CI_RUNNER":
@@ -621,5 +626,20 @@ func TestMoveRechecksAssignmentAfterReadingReplacement(t *testing.T) {
 				t.Fatalf("posts=%v move=%+v state=%+v", f.posts, got, st)
 			}
 		})
+	}
+}
+
+func TestMoveRetriesAnOwnedRecoveryAfterWorkflowReadFails(t *testing.T) {
+	f := newMoveFixture(t)
+	f.workflowError = http.StatusBadGateway
+	st := ownedCancellation()
+	k := key(moveRun)
+	out := f.move(t, &st, 6*time.Minute)
+	if len(f.posts) != 0 || st.Cancelled[k].NeedsAttention() || !strings.Contains(out.Recovery[k], "delayed") {
+		t.Fatalf("posts=%v recovery=%v state=%+v", f.posts, out.Recovery, st.Cancelled[k])
+	}
+	f.workflowError = 0
+	if got := f.move(t, &st, 7*time.Minute); len(got.Forced) != 1 || !slices.Equal(f.posts, []string{"force-cancel"}) {
+		t.Fatalf("recovered workflow read did not resume ownership: %+v %v", got, f.posts)
 	}
 }

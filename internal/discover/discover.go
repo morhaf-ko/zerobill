@@ -135,6 +135,9 @@ func workflows(gh *github.Client, repo string) ([]decl, error) {
 	return out, nil
 }
 
+// ErrWorkflowRead identifies an unavailable workflow response.
+var ErrWorkflowRead = errors.New("workflow read failed")
+
 func workflowFile(gh *github.Client, repo, path, ref string) (string, error) {
 	endpoint := "/repos/" + repo + "/contents/" + escapePath(path)
 	if ref != "" {
@@ -144,7 +147,7 @@ func workflowFile(gh *github.Client, repo, path, ref string) (string, error) {
 		Content, Encoding string
 	}
 	if err := gh.Get(endpoint, &file); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrWorkflowRead, err)
 	}
 	if file.Encoding != "base64" {
 		return "", fmt.Errorf("%s/%s: unexpected encoding %q", repo, path, file.Encoding)

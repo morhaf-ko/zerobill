@@ -163,6 +163,9 @@ func (w *Writer) migration(r collect.Run, run remoteRun, affected []recoveryJob,
 		}
 	}
 	routes, err := discover.JobRoutes(w.GH, r.Repo, run.Path, run.SHA, run.Event)
+	if errors.Is(err, discover.ErrWorkflowRead) {
+		return nil, fmt.Errorf("%w: %w", errUnverifiedRoute, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -569,6 +572,10 @@ func (w *Writer) Move(st *State, stuck []collect.Run, targets Targets, now time.
 			continue
 		}
 		if _, ok := st.Rerun[k]; ok {
+			continue
+		}
+		if len(targets[r.Repo]) == 0 {
+			out.Recovery[k] = "cancel skipped: no fresh replacement routes for repository"
 			continue
 		}
 		run, err := w.run(r)
