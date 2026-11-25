@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -135,7 +136,7 @@ func workflows(gh *github.Client, repo string) ([]decl, error) {
 	return out, nil
 }
 
-// ErrWorkflowRead identifies an unavailable workflow response.
+// ErrWorkflowRead identifies a transient workflow read failure.
 var ErrWorkflowRead = errors.New("workflow read failed")
 
 func workflowFile(gh *github.Client, repo, path, ref string) (string, error) {
@@ -147,6 +148,11 @@ func workflowFile(gh *github.Client, repo, path, ref string) (string, error) {
 		Content, Encoding string
 	}
 	if err := gh.Get(endpoint, &file); err != nil {
+		var status *github.StatusError
+		if errors.As(err, &status) && status.Code < 500 &&
+			status.Code != http.StatusRequestTimeout && status.Code != http.StatusTooManyRequests && !github.IsRateLimited(err) {
+			return "", err
+		}
 		return "", fmt.Errorf("%w: %w", ErrWorkflowRead, err)
 	}
 	if file.Encoding != "base64" {

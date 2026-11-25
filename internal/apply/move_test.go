@@ -643,3 +643,17 @@ func TestMoveRetriesAnOwnedRecoveryAfterWorkflowReadFails(t *testing.T) {
 		t.Fatalf("recovered workflow read did not resume ownership: %+v %v", got, f.posts)
 	}
 }
+
+func TestMoveEscalatesDefinitiveWorkflowReadFailure(t *testing.T) {
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			f := newMoveFixture(t)
+			f.workflowError = code
+			st := ownedCancellation()
+			f.move(t, &st, 6*time.Minute)
+			if m := st.Cancelled[key(moveRun)]; len(f.posts) != 0 || !m.NeedsAttention() {
+				t.Fatalf("posts=%v state=%+v", f.posts, m)
+			}
+		})
+	}
+}

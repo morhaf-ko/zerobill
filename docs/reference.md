@@ -166,9 +166,10 @@ updated according to the normal policy.
 3. After confirmed cancellation, use GitHub's failed-jobs rerun endpoint once.
    The cancelled jobs and their replacement routes must still match the saved
    plan. A changed route, an exhausted reserve, or an unavailable variable blocks
-   the request. A failed route read delays the request and keeps ownership for
-   the next check. GitHub also reschedules dependent jobs, so a declared dependency
-   on an affected job leaves recovery to the operator.
+   the request. A temporary route read failure delays the request and keeps
+   ownership for the next check. Missing workflow files or denied workflow
+   access require operator attention. GitHub also reschedules dependent jobs,
+   so a declared dependency on an affected job leaves recovery to the operator.
 4. Track the migrated jobs by name in the next attempt. `rerun` reports that their
    replacement labels were confirmed. `recovery` reports queue or GitHub-side
    waiting, runner assignment, and observed execution. A matching sibling label
