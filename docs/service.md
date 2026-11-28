@@ -197,6 +197,20 @@ hosted-routing hold and optional `/healthz` endpoint are separate from runner po
 see [availability rules](reference.md#how-a-runner-counts-as-down). Zerobill's `/healthz`
 checks its loop, not your server's power state or GitHub access.
 
+The service checks runner and active job state each interval, including both
+queued and in-progress workflows. It reconciles stable variables every five
+minutes and checks new labels immediately. To reconcile all managed variables
+at once, restart the existing service using its normal supervisor. Recovery
+still verifies the relevant variables and run state before sending a mutation.
+
+Hourly workflow discovery runs after routing work, within the interval budget.
+Startup waits for discovery before making routing changes. Discovery downloads
+new or changed workflow blobs. Retained directory entries and REST validators
+live in memory and are rebuilt after restart. Hosted usage is still read each
+check because neither report currently establishes a safe five-minute upper
+bound. A quota error pauses REST attempts until GitHub's retry or reset time,
+and failed required reads leave routing unchanged.
+
 Online commands emit one `github_request` JSON record to standard error for
 each REST transport attempt, including pages and redirects. Records are
 timestamped when the transport returns and written after the check. On
@@ -205,6 +219,8 @@ Group the records by `endpoint`, `method` and `status` to count requests.
 Status `0` means the transport returned without an HTTP response.
 `duration_ms` measures time to
 response headers or transport failure. `etag` records validator presence.
+An authenticated conditional `304` counts as an HTTP attempt and consumes no
+primary REST quota. A response with no usable validator is read normally.
 Records omit URLs, repository names, credentials, bodies and validator values.
 When GitHub supplies quota headers, `rate_limit` records the valid numeric
 fields and the recognized REST resource. `reset` is a Unix timestamp. These

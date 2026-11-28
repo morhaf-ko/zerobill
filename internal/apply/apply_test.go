@@ -94,3 +94,48 @@ func TestStateRoundTrip(t *testing.T) {
 		t.Fatalf("got %+v %v", got, err)
 	}
 }
+
+func TestReconcileRetriesFailedVariableAndRepairsDrift(t *testing.T) {
+	values := map[string]string{"CI_RUNNER": "old", "BOT_RUNNER": "old"}
+	reads := map[string]int{}
+	failBOT := true
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		name := filepath.Base(r.URL.Path)
+		if r.Method == http.MethodGet {
+			reads[name]++
+			_ = json.NewEncoder(rw).Encode(map[string]string{"value": values[name]})
+			return
+		}
+		if name == "BOT_RUNNER" && failBOT {
+			rw.WriteHeader(500)
+			return
+		}
+		values[name] = "home"
+		rw.WriteHeader(204)
+	}))
+	defer server.Close()
+	gh := github.New("token")
+	gh.BaseURL = server.URL
+	w := &Writer{GH: gh}
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	check := func(name string, at time.Duration, force, wantWrite, wantError bool) {
+		t.Helper()
+		got, err := w.Reconcile("org/repo", name, "home", now.Add(at), force)
+		if got != wantWrite || (err != nil) != wantError {
+			t.Fatalf("%s at %s: wrote=%v error=%v", name, at, got, err)
+		}
+	}
+	check("CI_RUNNER", 0, false, true, false)
+	check("BOT_RUNNER", 0, false, false, true)
+	failBOT = false
+	check("CI_RUNNER", time.Minute, false, false, false)
+	check("BOT_RUNNER", time.Minute, false, true, false)
+	if reads["CI_RUNNER"] != 1 || reads["BOT_RUNNER"] != 2 {
+		t.Fatalf("variable reads: %v", reads)
+	}
+	values["CI_RUNNER"] = "drift"
+	check("CI_RUNNER", 4*time.Minute, false, false, false)
+	check("CI_RUNNER", 5*time.Minute, false, true, false)
+	values["BOT_RUNNER"] = "drift"
+	check("BOT_RUNNER", 2*time.Minute, true, true, false)
+}

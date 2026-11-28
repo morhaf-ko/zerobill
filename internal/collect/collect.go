@@ -31,6 +31,8 @@ type Collector struct {
 	// StatePath caches this month's Blacksmith jobs between runs.
 	StatePath string
 	Now       func() time.Time
+	// Inventory can share a check's owner repository listing with discovery.
+	Inventory func() ([]github.Repo, error)
 }
 
 // Result holds the state of every provider that was observed and the error of
@@ -63,6 +65,7 @@ type Run struct {
 // Result.Errors and left out of Result.States, so the policy skips it.
 func (c *Collector) Observe(providers []policy.Provider) Result {
 	r := Result{States: map[string]policy.State{}, Errors: map[string]string{}, Movable: map[string][]Run{}, Queues: map[string]QueueDiagnostics{}}
+	month := c.now().Format("2006-01")
 	for _, p := range providers {
 		var s policy.State
 		var err error
@@ -86,6 +89,9 @@ func (c *Collector) Observe(providers []policy.Provider) Result {
 			s, err = c.gitHubHosted()
 		default:
 			err = fmt.Errorf("no collector for provider %q", p.Name)
+		}
+		if err == nil && p.Kind == policy.Metered && c.now().Format("2006-01") != month {
+			err = fmt.Errorf("billing month changed during collection")
 		}
 		if err != nil {
 			r.Errors[p.Name] = err.Error()
@@ -165,7 +171,7 @@ func (c *Collector) selfHosted(label string, timeout time.Duration) (policy.Stat
 	inventory := map[string][]runner{}
 	var s policy.State
 	for _, owner := range owners {
-		err := c.GH.Paginate(base+owner+"/actions/runners?per_page=100", func(body []byte) error {
+		err := c.GH.ConditionalPaginate(base+owner+"/actions/runners?per_page=100", func(body []byte) error {
 			var page struct {
 				Runners []runner `json:"runners"`
 			}
@@ -335,6 +341,9 @@ func (c *Collector) gitHubHosted() (policy.State, error) {
 	if err := c.GH.Get(path, &report); err != nil {
 		return policy.State{}, err
 	}
+	if report.UsageItems == nil {
+		return policy.State{}, fmt.Errorf("billing report is missing usage items")
+	}
 	var s policy.State
 	for _, it := range report.UsageItems {
 		if strings.EqualFold(it.Product, "actions") && it.SKU == linuxSKU && it.UnitType == "Minutes" {
@@ -412,7 +421,11 @@ func (c *Collector) monthUsage() (*usage, error) {
 	if err != nil {
 		return nil, err
 	}
-	repos, err := c.GH.Repos(c.Owner, c.Org)
+	inventory := c.Inventory
+	if inventory == nil {
+		inventory = func() ([]github.Repo, error) { return c.GH.Repos(c.Owner, c.Org) }
+	}
+	repos, err := inventory()
 	if err != nil {
 		return nil, err
 	}
@@ -504,7 +517,7 @@ func (c *Collector) runs(path string) ([]workflowRun, error) {
 func (c *Collector) runsTotal(path string) ([]workflowRun, int, error) {
 	var runs []workflowRun
 	var total int
-	err := c.GH.Paginate(path, func(body []byte) error {
+	err := c.GH.ConditionalPaginate(path, func(body []byte) error {
 		var page struct {
 			TotalCount   int           `json:"total_count"`
 			WorkflowRuns []workflowRun `json:"workflow_runs"`
@@ -526,7 +539,7 @@ func (c *Collector) runsTotal(path string) ([]workflowRun, int, error) {
 func (c *Collector) jobs(repo string, runID int64, filter string) ([]job, error) {
 	var jobs []job
 	path := fmt.Sprintf("/repos/%s/actions/runs/%d/jobs?filter=%s&per_page=100", repo, runID, filter)
-	err := c.GH.Paginate(path, func(body []byte) error {
+	err := c.GH.ConditionalPaginate(path, func(body []byte) error {
 		var page struct {
 			Jobs []job `json:"jobs"`
 		}

@@ -105,13 +105,23 @@ func literal(s string) []string {
 	return []string{s}
 }
 
-// workflows returns the runs-on declarations of every workflow in repo. A
-// repository without workflows returns none.
-func workflows(gh *github.Client, repo string) ([]decl, error) {
+type workflowKey struct{ repo, path string }
+
+type workflowBlob struct {
+	sha   string
+	decls []decl
+}
+
+// Scanner reuses parsed workflows whose directory entries still name the same blob.
+type Scanner struct {
+	blobs map[workflowKey]workflowBlob
+}
+
+func (s *Scanner) workflows(gh *github.Client, repo string, next map[workflowKey]workflowBlob) ([]decl, error) {
 	var files []struct {
-		Name, Path, Type string
+		Name, Path, Type, SHA string
 	}
-	err := gh.Get("/repos/"+repo+"/contents/.github/workflows", &files)
+	err := gh.ConditionalGet("/repos/"+repo+"/contents/.github/workflows", &files)
 	if github.IsNotFound(err) {
 		return nil, nil
 	}
@@ -123,15 +133,26 @@ func workflows(gh *github.Client, repo string) ([]decl, error) {
 		if f.Type != "file" || !(strings.HasSuffix(f.Name, ".yml") || strings.HasSuffix(f.Name, ".yaml")) {
 			continue
 		}
-		raw, err := workflowFile(gh, repo, f.Path, "")
-		if err != nil {
-			return nil, err
+		key := workflowKey{repo, f.Path}
+		blob, ok := s.blobs[key]
+		if !ok || f.SHA == "" || blob.sha != f.SHA {
+			raw, sha, err := readWorkflowFile(gh, repo, f.Path, "")
+			if err != nil {
+				return nil, err
+			}
+			if sha != "" && f.SHA != "" && sha != f.SHA {
+				return nil, fmt.Errorf("%s/%s: workflow changed during discovery", repo, f.Path)
+			}
+			decls, err := parseRunsOn(f.Path, raw)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", repo, err)
+			}
+			blob = workflowBlob{sha: sha, decls: decls}
 		}
-		decls, err := parseRunsOn(f.Path, raw)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", repo, err)
+		if blob.sha != "" && blob.sha == f.SHA {
+			next[key] = blob
 		}
-		out = append(out, decls...)
+		out = append(out, blob.decls...)
 	}
 	return out, nil
 }
@@ -139,30 +160,30 @@ func workflows(gh *github.Client, repo string) ([]decl, error) {
 // ErrWorkflowRead identifies a transient workflow read failure.
 var ErrWorkflowRead = errors.New("workflow read failed")
 
-func workflowFile(gh *github.Client, repo, path, ref string) (string, error) {
+func readWorkflowFile(gh *github.Client, repo, path, ref string) (string, string, error) {
 	endpoint := "/repos/" + repo + "/contents/" + escapePath(path)
 	if ref != "" {
 		endpoint += "?ref=" + url.QueryEscape(ref)
 	}
 	var file struct {
-		Content, Encoding string
+		Content, Encoding, SHA string
 	}
 	if err := gh.Get(endpoint, &file); err != nil {
 		var status *github.StatusError
 		if errors.As(err, &status) && status.Code < 500 &&
 			status.Code != http.StatusRequestTimeout && status.Code != http.StatusTooManyRequests && !github.IsRateLimited(err) {
-			return "", err
+			return "", "", err
 		}
-		return "", fmt.Errorf("%w: %w", ErrWorkflowRead, err)
+		return "", "", fmt.Errorf("%w: %w", ErrWorkflowRead, err)
 	}
 	if file.Encoding != "base64" {
-		return "", fmt.Errorf("%s/%s: unexpected encoding %q", repo, path, file.Encoding)
+		return "", "", fmt.Errorf("%s/%s: unexpected encoding %q", repo, path, file.Encoding)
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(file.Content, "\n", ""))
 	if err != nil {
-		return "", fmt.Errorf("%s/%s: %w", repo, path, err)
+		return "", "", fmt.Errorf("%s/%s: %w", repo, path, err)
 	}
-	return string(raw), nil
+	return string(raw), file.SHA, nil
 }
 
 var commitSHA = regexp.MustCompile(`^[[:xdigit:]]{40}$`)
@@ -179,7 +200,7 @@ func JobRoutes(gh *github.Client, repo, path, sha, event string) (map[string]Job
 	if (event != "push" && event != "workflow_dispatch") || !commitSHA.MatchString(sha) || !workflowPath.MatchString(path) {
 		return nil, fmt.Errorf("workflow revision cannot be verified for event %q", event)
 	}
-	raw, err := workflowFile(gh, repo, path, sha)
+	raw, _, err := readWorkflowFile(gh, repo, path, sha)
 	if err != nil {
 		return nil, err
 	}
@@ -284,11 +305,18 @@ type Result struct {
 
 // Discover scans the owner's private repositories, sorted by name.
 func Discover(gh *github.Client, owner string, org bool) (Result, error) {
-	var r Result
 	repos, err := gh.Repos(owner, org)
 	if err != nil {
-		return r, err
+		return Result{}, err
 	}
+	return (&Scanner{}).Scan(gh, repos)
+}
+
+// Scan discovers workflow routing in the supplied owner inventory.
+func (s *Scanner) Scan(gh *github.Client, repos []github.Repo) (Result, error) {
+	var r Result
+	next := make(map[workflowKey]workflowBlob)
+	repos = slices.Clone(repos)
 	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
 	for _, repo := range repos {
 		if repo.Private {
@@ -303,14 +331,17 @@ func Discover(gh *github.Client, owner string, org bool) (Result, error) {
 			r.ExampleRepo = repo.Name
 		}
 		name := repo.Name
-		decls, err := workflows(gh, name)
+		decls, err := s.workflows(gh, name, next)
 		if err != nil {
 			r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", name, err))
 			if errors.Is(err, context.DeadlineExceeded) {
 				return r, fmt.Errorf("workflow scan timed out at %s: %w", name, err)
 			}
 			r.AccessProblem = r.AccessProblem || github.IsAccessDenied(err)
-			r.RateLimited = r.RateLimited || github.IsRateLimited(err)
+			if github.IsRateLimited(err) {
+				r.RateLimited = true
+				return r, err
+			}
 			continue
 		}
 		r.Scanned++
@@ -330,5 +361,6 @@ func Discover(gh *github.Client, owner string, org bool) (Result, error) {
 			r.Repos = append(r.Repos, Repo{Name: name, Vars: vars})
 		}
 	}
+	s.blobs = next
 	return r, nil
 }
