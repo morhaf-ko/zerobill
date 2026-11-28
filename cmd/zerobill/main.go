@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -92,6 +91,7 @@ type app struct {
 	providers  []policy.Provider
 	routes     []policy.Route
 	gh         *github.Client
+	requests   requestLog
 	col        *collect.Collector
 	org        bool
 	login      string
@@ -121,18 +121,10 @@ func load(online bool, progress func(string)) (*app, error) {
 	}
 	a.gh = github.New(token)
 	a.gh.Progress = progress
-	a.gh.ObserveRequest = func(o github.RequestObservation) {
-		line, err := json.Marshal(struct {
-			Event string    `json:"event"`
-			Time  time.Time `json:"time"`
-			github.RequestObservation
-		}{"github_request", time.Now().UTC(), o})
-		if err == nil {
-			_, _ = os.Stderr.Write(append(line, '\n'))
-		}
-	}
+	a.gh.ObserveRequest = a.requests.record
 	a.authSource = credentialSource()
 	if err := a.connect(); err != nil {
+		a.requests.flush(os.Stderr)
 		return nil, err
 	}
 	return a, nil
