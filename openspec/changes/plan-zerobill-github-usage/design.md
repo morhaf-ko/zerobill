@@ -113,7 +113,7 @@ within budget if that response is missing. Flush relevant entries on writes,
 visibility/permission changes or credential scope changes. An authorized 304
 saves primary REST quota. It still costs an HTTP request and network time.
 Confirm support and semantics for each endpoint before assigning savings.
-[Conditional requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate)
+[Conditional requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests)
 
 For scheduled capacity, use a complete same-month snapshot and a conservative
 usage bound for its age, including in-flight work and the provider's reporting
@@ -155,6 +155,7 @@ evidence, or runner capacity. Keep REST for the hot path, billing, variables
 and recovery unless an equivalent query is demonstrated. GraphQL consumes a
 separate primary point budget with its own query limits and secondary limits.
 [GraphQL Actions schema](https://docs.github.com/en/graphql/reference/actions)
+· [GraphQL Git schema](https://docs.github.com/en/graphql/reference/git)
 · [GraphQL rate and query limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api)
 
 ## Installation identity
