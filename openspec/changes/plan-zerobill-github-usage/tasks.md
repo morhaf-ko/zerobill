@@ -12,3 +12,4 @@
 - [x] 2.3 Verify conservative capacity refresh and preserve failover during cold, quota-limited and month-rollover conditions. Keep the fresh-read fallback where usage cannot be bounded. See [verification](verification.md).
 - [ ] 2.4 Verify conditional pagination, workload savings and end-to-end failover and guarded recovery.
 - [x] 2.5 Evaluate App migration and optional event delivery against the design gates. See [verification](verification.md).
+- [ ] 2.6 After the reduced-volume production rollout, verify the operator’s personal REST core quota stays above 2,500 remaining at each sample during one hour of normal multi-mission work. Record the result in this ledger and the polling PR. See [production quota acceptance](verification.md#personal-rest-core-quota).
