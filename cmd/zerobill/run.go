@@ -43,11 +43,12 @@ func run(args []string) error {
 			return fmt.Errorf("unknown argument %q; run takes --apply and --health ADDRESS", args[i])
 		}
 	}
-	a, err := load(true, nil)
+	var requests requestLog
+	defer requests.flushOnSignal(os.Stderr)()
+	a, err := load(&requests, nil)
 	if err != nil {
 		return err
 	}
-	defer a.requests.flush(os.Stderr)
 	c, err := newController(a, write)
 	if err != nil {
 		return err
@@ -85,7 +86,7 @@ func run(args []string) error {
 			return err
 		}
 		beat.mark(time.Now())
-		a.requests.flush(os.Stderr)
+		requests.flush(os.Stderr)
 		<-tick.C
 	}
 }
