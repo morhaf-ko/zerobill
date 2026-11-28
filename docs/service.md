@@ -204,7 +204,8 @@ at once, restart the existing service using its normal supervisor. Recovery
 still verifies the relevant variables and run state before sending a mutation.
 
 Hourly workflow discovery runs after routing work, within the interval budget.
-Startup waits for discovery before making routing changes. Discovery downloads
+When interrupted, discovery resumes on a subsequent check. Startup waits for
+discovery before making routing changes. Discovery downloads
 new or changed workflow blobs. Retained directory entries and REST validators
 live in memory and are rebuilt after restart. Hosted usage is still read each
 check because neither report currently establishes a safe five-minute upper

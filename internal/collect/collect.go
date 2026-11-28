@@ -3,6 +3,7 @@ package collect
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -415,7 +416,7 @@ func (u *usage) blacksmith() float64 {
 
 // monthUsage reads the jobs of runs created this month in every repository the
 // owner has, caching completed jobs in StatePath.
-func (c *Collector) monthUsage() (*usage, error) {
+func (c *Collector) monthUsage() (_ *usage, resultErr error) {
 	now := c.now()
 	st, err := loadState(c.StatePath, now.Format("2006-01"))
 	if err != nil {
@@ -439,6 +440,12 @@ func (c *Collector) monthUsage() (*usage, error) {
 		return nil, fmt.Errorf("no private repositories visible; Blacksmith usage is unknown")
 	}
 	u := &usage{done: st.Jobs}
+	changed := false
+	defer func() {
+		if changed {
+			resultErr = errors.Join(resultErr, st.save(c.StatePath))
+		}
+	}()
 	for _, r := range repos {
 		repo := r.Name
 		runs, err := c.monthRuns(repo, now)
@@ -462,8 +469,10 @@ func (c *Collector) monthUsage() (*usage, error) {
 				}
 				switch {
 				case j.Status == "completed" && j.CompletedAt != nil:
+					changed = true
 					st.Jobs[id] = jobRecord{Labels: j.Labels, Minutes: ranMinutes(j, *j.CompletedAt)}
 				case j.Status == "completed":
+					changed = true
 					st.Jobs[id] = jobRecord{Labels: j.Labels}
 				default:
 					done = false
@@ -471,12 +480,10 @@ func (c *Collector) monthUsage() (*usage, error) {
 				}
 			}
 			if done {
+				changed = true
 				st.Runs[key] = true
 			}
 		}
-	}
-	if err := st.save(c.StatePath); err != nil {
-		return nil, err
 	}
 	return u, nil
 }

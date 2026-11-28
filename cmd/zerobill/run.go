@@ -179,7 +179,7 @@ func (c *controller) check(w io.Writer, now time.Time) error {
 	if c.writer != nil {
 		utc := now.UTC()
 		nextMonth := time.Date(utc.Year(), utc.Month()+1, 1, 0, 0, 0, 0, time.UTC)
-		writeCtx, cancelWrites := context.WithDeadline(ctx, nextMonth)
+		writeCtx, cancelWrites := context.WithTimeout(ctx, nextMonth.Sub(now))
 		defer cancelWrites()
 		c.writer.GH = gh.WithContext(writeCtx)
 	}
@@ -290,7 +290,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	for k, v := range r.Errors {
 		l.Errors[k] = v
 	}
-	if c.discoverErr != "" {
+	if c.foundAt.IsZero() && c.discoverErr != "" {
 		l.Errors["discover"] = c.discoverErr
 	}
 	states := adjust(c.a, &c.state, now, r.States, l.Errors)
@@ -446,6 +446,9 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		if err := apply.SaveState(c.a.appliedPath(), c.state); err != nil {
 			l.Errors["state"] = err.Error()
 		}
+	}
+	if c.discoverErr != "" {
+		l.Errors["discover"] = c.discoverErr
 	}
 	if len(c.workflowErrors) > 0 {
 		l.Errors["workflows"] = strings.Join(c.workflowErrors, "; ")

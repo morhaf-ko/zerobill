@@ -73,13 +73,23 @@ func (c *pageCache) prune(root string, seen map[string]bool) {
 }
 
 func (c *pageCache) invalidate(raw string) {
+	if !c.invalidateRepoURL(raw) {
+		c.clear()
+	}
+}
+
+func (c *pageCache) invalidateRepoURL(raw string) bool {
 	u, err := url.Parse(raw)
 	if err == nil {
 		if parts := strings.SplitN(u.Path, "/", 5); len(parts) >= 4 && parts[1] == "repos" {
 			c.invalidateRepo(parts[2] + "/" + parts[3])
-			return
+			return true
 		}
 	}
+	return false
+}
+
+func (c *pageCache) clear() {
 	clear(c.pages)
 	clear(c.inventories)
 	c.lru.Init()

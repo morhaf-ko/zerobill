@@ -89,3 +89,35 @@ func TestConditionalReadRetriesUnusable304AndInvalidatesAfterWrite(t *testing.T)
 		t.Fatalf("read after write: %v (%d attempts)", err, calls)
 	}
 }
+
+func TestMissingWorkflowDirectoryKeepsOtherRepoValidators(t *testing.T) {
+	gh := New("fixture")
+	gh.EnableConditionalReads()
+	const path = "/repos/org/repo/actions/runs?status=queued"
+	gh.HTTP.Transport = telemetryTestTransport(func(r *http.Request) (*http.Response, error) {
+		resp := &http.Response{StatusCode: 200, Header: make(http.Header)}
+		body := `{"workflow_runs":[]}`
+		switch {
+		case strings.Contains(r.URL.Path, "/contents/"):
+			resp.StatusCode, body = 404, "{}"
+		case r.Header.Get("If-None-Match") == `"runs"`:
+			resp.StatusCode, body = 304, ""
+		default:
+			resp.Header.Set("ETag", `"runs"`)
+		}
+		resp.Body = io.NopCloser(strings.NewReader(body))
+		return resp, nil
+	})
+	var status int
+	gh.ObserveRequest = func(o RequestObservation) { status = o.Status }
+	var out map[string]any
+	if err := gh.ConditionalGet(path, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := gh.ConditionalGet("/repos/org/repo/contents/.github/workflows", &out); !IsNotFound(err) {
+		t.Fatalf("directory error = %v", err)
+	}
+	if err := gh.ConditionalGet(path, &out); err != nil || status != 304 {
+		t.Fatalf("run-list revalidation = %d, %v", status, err)
+	}
+}

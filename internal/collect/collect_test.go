@@ -420,3 +420,31 @@ func TestActiveJobsRevalidatedWhenRunListIsUnchanged(t *testing.T) {
 		t.Fatalf("polls: %v", f.hits)
 	}
 }
+
+func TestColdMonthKeepsCompletedAttemptsAfterInterruptedRead(t *testing.T) {
+	f := newFake(t)
+	f.json("/orgs/acme/repos", `[
+		{"full_name":"acme/one","private":true,"owner":{"login":"acme"}},
+		{"full_name":"acme/two","private":true,"owner":{"login":"acme"}}
+	]`)
+	f.json("/repos/acme/one/actions/runs", `{"workflow_runs":[{"id":1,"run_attempt":1,"status":"completed"}]}`)
+	f.json("/repos/acme/one/actions/runs/1/jobs", `{"jobs":[]}`)
+	f.routes["/repos/acme/two/actions/runs"] = func(w http.ResponseWriter, r *http.Request) {
+		if f.hits[r.URL.Path] == 1 {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return
+		}
+		fmt.Fprint(w, `{"workflow_runs":[]}`)
+	}
+	c := f.collector("acme")
+	c.StatePath = filepath.Join(t.TempDir(), "cache.json")
+	providers := []policy.Provider{{Name: "blacksmith", Kind: policy.Metered}}
+	first := c.Observe(providers)
+	if first.Errors["blacksmith"] == "" || len(first.States) != 0 {
+		t.Fatalf("interrupted snapshot accepted: %+v", first)
+	}
+	second := c.Observe(providers)
+	if len(second.Errors) != 0 || len(second.States) != 1 || f.hits["/repos/acme/one/actions/runs/1/jobs"] != 1 {
+		t.Fatalf("cold month did not resume: %+v %v", second, f.hits)
+	}
+}

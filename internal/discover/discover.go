@@ -114,7 +114,15 @@ type workflowBlob struct {
 
 // Scanner reuses parsed workflows whose directory entries still name the same blob.
 type Scanner struct {
-	blobs map[workflowKey]workflowBlob
+	blobs   map[workflowKey]workflowBlob
+	pending *scanProgress
+}
+
+type scanProgress struct {
+	repos  []github.Repo
+	cursor int
+	used   map[workflowKey]workflowBlob
+	result Result
 }
 
 func (s *Scanner) workflows(gh *github.Client, repo string, next map[workflowKey]workflowBlob) ([]decl, error) {
@@ -150,6 +158,10 @@ func (s *Scanner) workflows(gh *github.Client, repo string, next map[workflowKey
 			blob = workflowBlob{sha: sha, decls: decls}
 		}
 		if blob.sha != "" && blob.sha == f.SHA {
+			if s.blobs == nil {
+				s.blobs = make(map[workflowKey]workflowBlob)
+			}
+			s.blobs[key] = blob
 			next[key] = blob
 		}
 		out = append(out, blob.decls...)
@@ -314,16 +326,20 @@ func Discover(gh *github.Client, owner string, org bool) (Result, error) {
 
 // Scan discovers workflow routing in the supplied owner inventory.
 func (s *Scanner) Scan(gh *github.Client, repos []github.Repo) (Result, error) {
-	var r Result
-	next := make(map[workflowKey]workflowBlob)
 	repos = slices.Clone(repos)
 	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
-	for _, repo := range repos {
-		if repo.Private {
-			r.PrivateRepos++
+	if s.pending == nil || !slices.Equal(repos, s.pending.repos) {
+		s.pending = &scanProgress{repos: repos, used: make(map[workflowKey]workflowBlob)}
+		for _, repo := range repos {
+			if repo.Private {
+				s.pending.result.PrivateRepos++
+			}
 		}
 	}
-	for _, repo := range repos {
+	progress := s.pending
+	r := &progress.result
+	for ; progress.cursor < len(repos); progress.cursor++ {
+		repo := repos[progress.cursor]
 		if !repo.Private {
 			continue
 		}
@@ -331,17 +347,19 @@ func (s *Scanner) Scan(gh *github.Client, repos []github.Repo) (Result, error) {
 			r.ExampleRepo = repo.Name
 		}
 		name := repo.Name
-		decls, err := s.workflows(gh, name, next)
+		decls, err := s.workflows(gh, name, progress.used)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || github.IsRateLimited(err) {
+				incomplete := *r
+				incomplete.RateLimited = github.IsRateLimited(err)
+				incomplete.Errors = append(slices.Clone(r.Errors), fmt.Sprintf("%s: %v", name, err))
+				if incomplete.RateLimited {
+					return incomplete, err
+				}
+				return incomplete, fmt.Errorf("workflow scan timed out at %s: %w", name, err)
+			}
 			r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", name, err))
-			if errors.Is(err, context.DeadlineExceeded) {
-				return r, fmt.Errorf("workflow scan timed out at %s: %w", name, err)
-			}
 			r.AccessProblem = r.AccessProblem || github.IsAccessDenied(err)
-			if github.IsRateLimited(err) {
-				r.RateLimited = true
-				return r, err
-			}
 			continue
 		}
 		r.Scanned++
@@ -361,6 +379,7 @@ func (s *Scanner) Scan(gh *github.Client, repos []github.Repo) (Result, error) {
 			r.Repos = append(r.Repos, Repo{Name: name, Vars: vars})
 		}
 	}
-	s.blobs = next
-	return r, nil
+	s.blobs = progress.used
+	s.pending = nil
+	return *r, nil
 }

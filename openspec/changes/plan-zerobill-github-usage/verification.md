@@ -33,9 +33,9 @@ responses. It excludes startup and workflow recovery mutations.
 | Rollover | 3,826 | 3,075 | 3,075 | 135 |
 
 The busy case adds six all-attempt jobs requests (six 200) and 12 latest jobs
-requests (six 200 and six 304). Six runs-created responses and 12 active run
-observations also reflect changes, including the initial 200 in the quiet
-case. Month rollover adds 15 new 200 responses for the new runs-created query.
+requests (six 200 and six 304). Changed run views add five 200 responses for
+runs-created and eleven for in-progress lists compared with the quiet case.
+Month rollover adds 15 new 200 responses for the new runs-created query.
 
 The quiet baseline and step 2 match the [design](design.md). Step 3 keeps live
 capacity and inventory reads, so attempts remain higher than the design's
@@ -56,9 +56,13 @@ can revisit the five-minute projection.
 
 The tests cover a billing request crossing midnight UTC, Retry-After across
 checks, partial variable writes, periodic drift, pagination after 304, and
-later jobs queuing under an unchanged active run. Recovery keeps unconditional
-pre-mutation reads, persisted intent and attempt verification. Existing
-controller and writer fixtures exercise the cancellation and rerun sequence.
+later jobs queuing under an unchanged active run. Interrupted discovery resumes
+at its next unfinished repository. An interrupted Blacksmith collection
+retains completed attempts but withholds a capacity result until a complete
+check. The controller fixture runs the whole sequence on one-minute ticks:
+it finds a later job, switches the variable on the first tick beyond its
+queue timeout, cancels, submits and verifies the replacement attempt, and
+switches back on the tick when the idle runner returns.
 
 The existing installation cannot be selected for runtime delivery without
 proof of complete repository coverage, the exact organization billing report

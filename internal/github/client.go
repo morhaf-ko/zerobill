@@ -82,10 +82,9 @@ func (c *Client) paginate(path string, page func(body []byte) error, conditional
 	seen := make(map[string]bool)
 	if conditional {
 		root = u
-
 	}
 	var endpoint string
-	if c.ObserveRequest != nil {
+	if conditional || c.ObserveRequest != nil {
 		if first, err := url.Parse(u); err == nil {
 			endpoint = endpointClass(first)
 		}
@@ -273,8 +272,17 @@ func (c *Client) do(method, u string, in, out any, endpoint, root string) (strin
 		if c.backoff != nil && IsRateLimited(status) {
 			c.backoff.record(time.Now(), resp.Header)
 		}
-		if c.pages != nil && (IsAccessDenied(status) || IsNotFound(status)) {
-			c.pages.invalidate(u)
+		if c.pages != nil {
+			switch {
+			case status.Code == http.StatusUnauthorized:
+				c.pages.clear()
+			case IsAccessDenied(status):
+				c.pages.invalidateRepoURL(u)
+				fallthrough
+			case IsNotFound(status):
+				c.pages.remove(c.pages.pages[key])
+				c.pages.remove(c.pages.pages[pageKey{root: u, url: u}])
+			}
 		}
 		return "", status
 	}
@@ -284,6 +292,12 @@ func (c *Client) do(method, u string, in, out any, endpoint, root string) (strin
 		}
 	}
 	if root != "" && out != nil {
+		if endpoint == "repo_inventory" && next == "" {
+			var repos []json.RawMessage
+			if json.Unmarshal(body, &repos) == nil && len(repos) == 100 {
+				etag = ""
+			}
+		}
 		c.pages.save(cachedPage{key: key, finalURL: finalURL, etag: etag, next: next, body: body})
 	}
 	return next, nil
