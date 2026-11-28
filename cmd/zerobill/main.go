@@ -97,8 +97,8 @@ type app struct {
 	authSource string
 }
 
-// load reads the config; with online set it also connects to GitHub.
-func load(online bool, progress func(string)) (*app, error) {
+// load connects to GitHub only when the command supplies a request log.
+func load(requests *requestLog, progress func(string)) (*app, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
@@ -108,7 +108,7 @@ func load(online bool, progress func(string)) (*app, error) {
 		return nil, err
 	}
 	a := &app{cfg: cfg, stateDir: stateDir}
-	if !online {
+	if requests == nil {
 		a.providers, a.routes = build(cfg, 0)
 		return a, nil
 	}
@@ -120,6 +120,7 @@ func load(online bool, progress func(string)) (*app, error) {
 	}
 	a.gh = github.New(token)
 	a.gh.Progress = progress
+	a.gh.ObserveRequest = requests.record
 	a.authSource = credentialSource()
 	if err := a.connect(); err != nil {
 		return nil, err
@@ -249,7 +250,7 @@ func providerArg(a *app, args []string) (string, error) {
 }
 
 func pause(args []string, now time.Time) error {
-	a, err := load(false, nil)
+	a, err := load(nil, nil)
 	if err != nil {
 		return err
 	}
@@ -278,7 +279,7 @@ func pause(args []string, now time.Time) error {
 }
 
 func resume(args []string) error {
-	a, err := load(false, nil)
+	a, err := load(nil, nil)
 	if err != nil {
 		return err
 	}

@@ -24,7 +24,7 @@ var errStatusIncomplete = errors.New("status incomplete")
 
 func status(args []string) error {
 	if len(args) == 0 {
-		a, err := load(false, nil)
+		a, err := load(nil, nil)
 		if err != nil {
 			return err
 		}
@@ -35,7 +35,9 @@ func status(args []string) error {
 	}
 	progress := statusProgress(os.Stderr)
 	progress("")
-	a, err := load(true, progress)
+	var requests requestLog
+	defer requests.flushOnSignal(os.Stderr)()
+	a, err := load(&requests, progress)
 	if err != nil {
 		return err
 	}

@@ -197,5 +197,19 @@ hosted-routing hold and optional `/healthz` endpoint are separate from runner po
 see [availability rules](reference.md#how-a-runner-counts-as-down). Zerobill's `/healthz`
 checks its loop, not your server's power state or GitHub access.
 
+Online commands emit one `github_request` JSON record to standard error for
+each REST transport attempt, including pages and redirects. Records are
+timestamped when the transport returns and written after the check. On
+`SIGINT` or `SIGTERM`, ZeroBill flushes completed attempts before exiting.
+Group the records by `endpoint`, `method` and `status` to count requests.
+Status `0` means the transport returned without an HTTP response.
+`duration_ms` measures time to
+response headers or transport failure. `etag` records validator presence.
+Records omit URLs, repository names, credentials, bodies and validator values.
+When GitHub supplies quota headers, `rate_limit` records the valid numeric
+fields and the recognized REST resource. `reset` is a Unix timestamp. These
+headers describe the shared credential bucket. Use the request records to
+attribute attempts to ZeroBill.
+
 Configure provider spending limits separately. Logs, reserves and alerts help you
 notice problems; they do not provide a billing guarantee.
