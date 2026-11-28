@@ -151,3 +151,21 @@ func TestRequestObservation(t *testing.T) {
 		}
 	}
 }
+
+func TestPollingClientHonorsRetryAfterAcrossChecks(t *testing.T) {
+	gh := New("fixture")
+	gh.EnableBackoff()
+	calls := 0
+	gh.HTTP.Transport = telemetryTestTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		h := make(http.Header)
+		h.Set("Retry-After", "60")
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Header: h, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	if err := gh.WithContext(t.Context()).Get("/user", nil); !IsRateLimited(err) {
+		t.Fatalf("first request: %v", err)
+	}
+	if err := gh.WithContext(t.Context()).Get("/user", nil); !IsRateLimited(err) || calls != 1 {
+		t.Fatalf("next check: %v, HTTP attempts=%d", err, calls)
+	}
+}

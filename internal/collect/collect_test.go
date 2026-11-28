@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -345,5 +346,105 @@ func TestSelfHostedQueueDiagnosticsDoNotTurnMissingTimeIntoStall(t *testing.T) {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("missing %q in %s", want, raw)
 		}
+	}
+}
+
+func TestCapacityCannotCrossBillingMonth(t *testing.T) {
+	f := newFake(t)
+	start := time.Date(2026, 11, 30, 23, 59, 59, 0, time.UTC)
+	c := f.collector("acme")
+	var rollover atomic.Bool
+	c.Now = func() time.Time {
+		if rollover.Load() {
+			return start.Add(time.Second)
+		}
+		return start
+	}
+	f.routes["/organizations/acme/settings/billing/usage"] = func(w http.ResponseWriter, r *http.Request) {
+		rollover.Store(true)
+		fmt.Fprint(w, `{"usageItems":[]}`)
+	}
+	result := c.Observe([]policy.Provider{{Name: "github", Kind: policy.Metered}})
+	if _, ok := result.States["github"]; ok || result.Errors["github"] == "" {
+		t.Fatalf("old-month billing response accepted: %+v", result)
+	}
+}
+
+func TestActiveJobsRevalidatedWhenRunListIsUnchanged(t *testing.T) {
+	f := newFake(t)
+	f.json("/orgs/acme/actions/runners", `{"runners":[{"status":"online","labels":[{"name":"home"}]}]}`)
+	const runs = "/repos/acme/app/actions/runs"
+	const jobs = "/repos/acme/app/actions/runs/123/jobs"
+	f.routes[runs] = func(w http.ResponseWriter, r *http.Request) {
+		body := `{"workflow_runs":[]}`
+		etag := `"queued"`
+		if r.URL.Query().Get("status") == "in_progress" {
+			body = fmt.Sprintf(`{"workflow_runs":[{"id":123,"status":"in_progress","run_attempt":2,"created_at":%q}]}`, now.Add(-time.Hour).Format(time.RFC3339))
+			etag = `"active"`
+		}
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(304)
+			return
+		}
+		fmt.Fprint(w, body)
+	}
+	f.routes[jobs] = func(w http.ResponseWriter, r *http.Request) {
+		etag := `"jobs"`
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(304)
+			return
+		}
+		if f.hits[jobs] == 1 {
+			w.Header().Set("ETag", `"empty"`)
+			fmt.Fprint(w, `{"jobs":[]}`)
+			return
+		}
+		fmt.Fprintf(w, `{"jobs":[{"id":100,"run_attempt":2,"status":"queued","labels":["home"],"created_at":%q}]}`, now.Format(time.RFC3339))
+	}
+	c := f.collector("acme", "acme/app")
+	c.GH.EnableConditionalReads()
+	p := []policy.Provider{{Name: "runner", Kind: policy.SelfHosted, Label: "home", QueueTimeout: time.Minute}}
+	for i := range 3 {
+		c.Now = func() time.Time { return now.Add(time.Duration(i) * time.Minute) }
+		got := c.Observe(p)
+		if len(got.Errors) != 0 || got.States["runner"].OldestQueued != time.Duration(i)*time.Minute {
+			t.Fatalf("minute %d: %+v", i, got)
+		}
+		if (i > 0) != (len(got.Movable["runner"]) == 1) {
+			t.Fatalf("minute %d: movable=%v", i, got.Movable)
+		}
+	}
+	if f.hits[runs] != 6 || f.hits[jobs] != 3 {
+		t.Fatalf("polls: %v", f.hits)
+	}
+}
+
+func TestColdMonthKeepsCompletedAttemptsAfterInterruptedRead(t *testing.T) {
+	f := newFake(t)
+	f.json("/orgs/acme/repos", `[
+		{"full_name":"acme/one","private":true,"owner":{"login":"acme"}},
+		{"full_name":"acme/two","private":true,"owner":{"login":"acme"}}
+	]`)
+	f.json("/repos/acme/one/actions/runs", `{"workflow_runs":[{"id":1,"run_attempt":1,"status":"completed"}]}`)
+	f.json("/repos/acme/one/actions/runs/1/jobs", `{"jobs":[]}`)
+	f.routes["/repos/acme/two/actions/runs"] = func(w http.ResponseWriter, r *http.Request) {
+		if f.hits[r.URL.Path] == 1 {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return
+		}
+		fmt.Fprint(w, `{"workflow_runs":[]}`)
+	}
+	c := f.collector("acme")
+	c.StatePath = filepath.Join(t.TempDir(), "cache.json")
+	providers := []policy.Provider{{Name: "blacksmith", Kind: policy.Metered}}
+	first := c.Observe(providers)
+	if first.Errors["blacksmith"] == "" || len(first.States) != 0 {
+		t.Fatalf("interrupted snapshot accepted: %+v", first)
+	}
+	second := c.Observe(providers)
+	if len(second.Errors) != 0 || len(second.States) != 1 || f.hits["/repos/acme/one/actions/runs/1/jobs"] != 1 {
+		t.Fatalf("cold month did not resume: %+v %v", second, f.hits)
 	}
 }

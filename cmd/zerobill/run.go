@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/morhaf-ko/zerobill/internal/collect"
 	"github.com/morhaf-ko/zerobill/internal/config"
 	"github.com/morhaf-ko/zerobill/internal/discover"
+	"github.com/morhaf-ko/zerobill/internal/github"
 	"github.com/morhaf-ko/zerobill/internal/notify"
 	pauses "github.com/morhaf-ko/zerobill/internal/pause"
 	"github.com/morhaf-ko/zerobill/internal/policy"
@@ -49,6 +52,8 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	a.gh.EnableBackoff()
+	a.gh.EnableConditionalReads()
 	c, err := newController(a, write)
 	if err != nil {
 		return err
@@ -69,28 +74,8 @@ func run(args []string) error {
 	}
 	tick := time.NewTicker(a.cfg.CheckInterval)
 	defer tick.Stop()
-	var foundAt time.Time
 	for {
-		if time.Since(foundAt) >= rediscover {
-			found, err := discover.Discover(a.gh, a.cfg.Owner, a.org)
-			c.discoverErr = ""
-			c.workflowErrors = found.Errors
-			c.coverage = discoveryCoverage{Private: found.PrivateRepos, Scanned: found.Scanned, Failed: len(found.Errors), CheckedAt: time.Now().UTC()}
-			if err != nil {
-				c.coverage.State = "incomplete"
-			} else if len(found.Errors) != 0 {
-				c.coverage.State = "partial"
-			} else {
-				c.coverage.State = "complete"
-			}
-			if err != nil {
-				c.discoverErr = err.Error()
-			} else {
-				c.repos, foundAt = found.Repos, time.Now()
-				a.col.Repositories = names(found.Repos)
-			}
-		}
-		if err := c.step(os.Stdout, time.Now().UTC(), a.col.Observe(a.providers)); err != nil {
+		if err := c.check(os.Stdout, time.Now().UTC()); err != nil {
 			return err
 		}
 		beat.mark(time.Now())
@@ -148,6 +133,8 @@ type controller struct {
 	workflowErrors []string
 	coverage       discoveryCoverage
 	lastCheck      time.Time
+	foundAt        time.Time
+	scanner        discover.Scanner
 }
 
 func newController(a *app, write bool) (*controller, error) {
@@ -160,6 +147,85 @@ func newController(a *app, write bool) (*controller, error) {
 		c.writer = &apply.Writer{GH: a.gh}
 	}
 	return c, nil
+}
+
+func (c *controller) check(w io.Writer, now time.Time) error {
+	interval := c.a.cfg.CheckInterval
+	if interval == 0 {
+		interval = config.DefaultCheckInterval
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), interval)
+	defer cancel()
+	gh := c.a.gh.WithContext(ctx)
+	collector := *c.a.col
+	collector.GH = gh
+	collector.Repositories = names(c.repos)
+	collector.Inventory = sync.OnceValues(func() ([]github.Repo, error) {
+		return gh.Repos(c.a.cfg.Owner, c.a.org)
+	})
+	providers := c.a.providers
+	if c.foundAt.IsZero() {
+		if c.discoverErr == "" {
+			c.discoverErr = "waiting for initial workflow discovery"
+		}
+		// Discovery supplies the repository set before the first routing decision.
+		providers = nil
+		for _, provider := range c.a.providers {
+			if provider.Kind == policy.SelfHosted {
+				providers = append(providers, provider)
+			}
+		}
+	}
+	if c.writer != nil {
+		utc := now.UTC()
+		nextMonth := time.Date(utc.Year(), utc.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+		writeCtx, cancelWrites := context.WithTimeout(ctx, nextMonth.Sub(now))
+		defer cancelWrites()
+		c.writer.GH = gh.WithContext(writeCtx)
+	}
+	result := collector.Observe(providers)
+	if err := c.step(w, now, result); err != nil {
+		return err
+	}
+	if (c.foundAt.IsZero() || now.Sub(c.foundAt) >= rediscover) && ctx.Err() == nil {
+		repos, err := collector.Inventory()
+		var found discover.Result
+		if err == nil {
+			found, err = c.scanner.Scan(gh, repos)
+		}
+		c.updateDiscovery(now, found, err)
+	}
+	return nil
+}
+
+func (c *controller) updateDiscovery(now time.Time, found discover.Result, err error) {
+	c.discoverErr = ""
+	c.workflowErrors = found.Errors
+	c.coverage = discoveryCoverage{Private: found.PrivateRepos, Scanned: found.Scanned, Failed: len(found.Errors), CheckedAt: now}
+	switch {
+	case err != nil:
+		c.coverage.State = "incomplete"
+		c.discoverErr = err.Error()
+		return
+	case len(found.Errors) > 0:
+		c.coverage.State = "partial"
+	default:
+		c.coverage.State = "complete"
+	}
+	if c.writer != nil {
+		next := make(map[string]discover.Repo, len(found.Repos))
+		for _, repo := range found.Repos {
+			next[repo.Name] = repo
+		}
+		for _, repo := range c.repos {
+			for _, variable := range repo.Vars {
+				if !reads(next[repo.Name], variable) {
+					c.writer.Forget(repo.Name, variable)
+				}
+			}
+		}
+	}
+	c.repos, c.foundAt = found.Repos, now
 }
 
 // line is one run log entry.
@@ -262,6 +328,14 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		l.Errors["write"] = "skipped: a read failed"
 	}
 	targets := apply.Targets{}
+	stuck := c.stuck(states, r)
+	recovery := make(map[string]bool)
+	for _, run := range stuck {
+		recovery[run.Repo] = true
+	}
+	for _, run := range c.state.Cancelled {
+		recovery[run.Repo] = true
+	}
 	var changes []string
 	for _, rt := range c.a.routes {
 		applied := c.state.Routes[rt.Variable]
@@ -269,7 +343,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		rl := routeLine{Variable: rt.Variable, Provider: d.Provider, Label: d.Label, Reason: d.Reason, Held: held}
 		// Without --apply the decision counts as applied in memory, so the log
 		// shows the holds a real run would make.
-		took := !c.apply
+		took := !c.apply && readsOK
 		if write {
 			eligible := c.replacementEligible(rl, states)
 			rl.Written = []string{}
@@ -277,7 +351,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 				if !reads(repo, rt.Variable) {
 					continue
 				}
-				changed, err := c.writer.Set(repo.Name, rt.Variable, d.Label)
+				changed, err := c.writer.Reconcile(repo.Name, rt.Variable, d.Label, now, recovery[repo.Name])
 				if err != nil {
 					if rl.Failed == nil {
 						rl.Failed = map[string]string{}
@@ -314,7 +388,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	}
 	if c.apply {
 		checkpoint := func() error { return apply.SaveState(c.a.appliedPath(), c.state) }
-		moves, err := c.writer.Move(&c.state, c.stuck(states, r), targets, now, checkpoint)
+		moves, err := c.writer.Move(&c.state, stuck, targets, now, checkpoint)
 		l.Cancelled, l.Forced, l.Rerun, l.Recovery = moves.Cancelled, moves.Forced, moves.Rerun, moves.Recovery
 		if err != nil {
 			l.Errors["move"] = err.Error()

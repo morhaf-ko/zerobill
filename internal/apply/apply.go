@@ -18,7 +18,39 @@ import (
 
 // Writer sets repository variables through the GitHub REST API.
 type Writer struct {
-	GH *github.Client
+	GH      *github.Client
+	checked map[variableKey]variableCheck
+}
+
+type variableKey struct{ repo, name string }
+
+type variableCheck struct {
+	label string
+	at    time.Time
+}
+
+// Reconcile checks stable variables every five minutes and checks changes immediately.
+func (w *Writer) Reconcile(repo, name, label string, now time.Time, force bool) (bool, error) {
+	key := variableKey{repo, name}
+	if prior, ok := w.checked[key]; ok && !force && prior.label == label &&
+		!now.Before(prior.at) && now.Sub(prior.at) < 5*time.Minute {
+		return false, nil
+	}
+	delete(w.checked, key)
+	changed, err := w.set(repo, name, label, !force)
+	if err != nil {
+		return false, err
+	}
+	if w.checked == nil {
+		w.checked = make(map[variableKey]variableCheck)
+	}
+	w.checked[key] = variableCheck{label, now}
+	return changed, nil
+}
+
+// Forget removes the observation for a variable no longer managed by this writer.
+func (w *Writer) Forget(repo, name string) {
+	delete(w.checked, variableKey{repo, name})
 }
 
 func (w *Writer) variable(repo, name string) (string, error) {
@@ -32,16 +64,27 @@ func (w *Writer) variable(repo, name string) (string, error) {
 // Set sets the Actions variable name in repo, owner/name, to label, writing
 // only when it differs. It reports whether it wrote.
 func (w *Writer) Set(repo, name, label string) (bool, error) {
+	return w.set(repo, name, label, false)
+}
+
+func (w *Writer) set(repo, name, label string, conditional bool) (bool, error) {
 	base := "/repos/" + repo + "/actions/variables"
 	path := base + "/" + url.PathEscape(name)
 	body := map[string]string{"name": name, "value": label}
-	current, err := w.variable(repo, name)
+	var current struct {
+		Value string `json:"value"`
+	}
+	get := w.GH.Get
+	if conditional {
+		get = w.GH.ConditionalGet
+	}
+	err := get(path, &current)
 	switch {
 	case github.IsNotFound(err):
 		return true, w.GH.Send(http.MethodPost, base, body)
 	case err != nil:
 		return false, err
-	case current == label:
+	case current.Value == label:
 		return false, nil
 	default:
 		return true, w.GH.Send(http.MethodPatch, path, body)

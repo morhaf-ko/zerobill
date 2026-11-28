@@ -3,6 +3,7 @@ package collect
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -31,6 +32,8 @@ type Collector struct {
 	// StatePath caches this month's Blacksmith jobs between runs.
 	StatePath string
 	Now       func() time.Time
+	// Inventory can share a check's owner repository listing with discovery.
+	Inventory func() ([]github.Repo, error)
 }
 
 // Result holds the state of every provider that was observed and the error of
@@ -63,6 +66,7 @@ type Run struct {
 // Result.Errors and left out of Result.States, so the policy skips it.
 func (c *Collector) Observe(providers []policy.Provider) Result {
 	r := Result{States: map[string]policy.State{}, Errors: map[string]string{}, Movable: map[string][]Run{}, Queues: map[string]QueueDiagnostics{}}
+	month := c.now().Format("2006-01")
 	for _, p := range providers {
 		var s policy.State
 		var err error
@@ -86,6 +90,9 @@ func (c *Collector) Observe(providers []policy.Provider) Result {
 			s, err = c.gitHubHosted()
 		default:
 			err = fmt.Errorf("no collector for provider %q", p.Name)
+		}
+		if err == nil && p.Kind == policy.Metered && c.now().Format("2006-01") != month {
+			err = fmt.Errorf("billing month changed during collection")
 		}
 		if err != nil {
 			r.Errors[p.Name] = err.Error()
@@ -165,7 +172,7 @@ func (c *Collector) selfHosted(label string, timeout time.Duration) (policy.Stat
 	inventory := map[string][]runner{}
 	var s policy.State
 	for _, owner := range owners {
-		err := c.GH.Paginate(base+owner+"/actions/runners?per_page=100", func(body []byte) error {
+		err := c.GH.ConditionalPaginate(base+owner+"/actions/runners?per_page=100", func(body []byte) error {
 			var page struct {
 				Runners []runner `json:"runners"`
 			}
@@ -335,6 +342,9 @@ func (c *Collector) gitHubHosted() (policy.State, error) {
 	if err := c.GH.Get(path, &report); err != nil {
 		return policy.State{}, err
 	}
+	if report.UsageItems == nil {
+		return policy.State{}, fmt.Errorf("billing report is missing usage items")
+	}
 	var s policy.State
 	for _, it := range report.UsageItems {
 		if strings.EqualFold(it.Product, "actions") && it.SKU == linuxSKU && it.UnitType == "Minutes" {
@@ -406,13 +416,17 @@ func (u *usage) blacksmith() float64 {
 
 // monthUsage reads the jobs of runs created this month in every repository the
 // owner has, caching completed jobs in StatePath.
-func (c *Collector) monthUsage() (*usage, error) {
+func (c *Collector) monthUsage() (_ *usage, resultErr error) {
 	now := c.now()
 	st, err := loadState(c.StatePath, now.Format("2006-01"))
 	if err != nil {
 		return nil, err
 	}
-	repos, err := c.GH.Repos(c.Owner, c.Org)
+	inventory := c.Inventory
+	if inventory == nil {
+		inventory = func() ([]github.Repo, error) { return c.GH.Repos(c.Owner, c.Org) }
+	}
+	repos, err := inventory()
 	if err != nil {
 		return nil, err
 	}
@@ -426,6 +440,12 @@ func (c *Collector) monthUsage() (*usage, error) {
 		return nil, fmt.Errorf("no private repositories visible; Blacksmith usage is unknown")
 	}
 	u := &usage{done: st.Jobs}
+	changed := false
+	defer func() {
+		if changed {
+			resultErr = errors.Join(resultErr, st.save(c.StatePath))
+		}
+	}()
 	for _, r := range repos {
 		repo := r.Name
 		runs, err := c.monthRuns(repo, now)
@@ -449,8 +469,10 @@ func (c *Collector) monthUsage() (*usage, error) {
 				}
 				switch {
 				case j.Status == "completed" && j.CompletedAt != nil:
+					changed = true
 					st.Jobs[id] = jobRecord{Labels: j.Labels, Minutes: ranMinutes(j, *j.CompletedAt)}
 				case j.Status == "completed":
+					changed = true
 					st.Jobs[id] = jobRecord{Labels: j.Labels}
 				default:
 					done = false
@@ -458,12 +480,10 @@ func (c *Collector) monthUsage() (*usage, error) {
 				}
 			}
 			if done {
+				changed = true
 				st.Runs[key] = true
 			}
 		}
-	}
-	if err := st.save(c.StatePath); err != nil {
-		return nil, err
 	}
 	return u, nil
 }
@@ -504,7 +524,7 @@ func (c *Collector) runs(path string) ([]workflowRun, error) {
 func (c *Collector) runsTotal(path string) ([]workflowRun, int, error) {
 	var runs []workflowRun
 	var total int
-	err := c.GH.Paginate(path, func(body []byte) error {
+	err := c.GH.ConditionalPaginate(path, func(body []byte) error {
 		var page struct {
 			TotalCount   int           `json:"total_count"`
 			WorkflowRuns []workflowRun `json:"workflow_runs"`
@@ -526,7 +546,7 @@ func (c *Collector) runsTotal(path string) ([]workflowRun, int, error) {
 func (c *Collector) jobs(repo string, runID int64, filter string) ([]job, error) {
 	var jobs []job
 	path := fmt.Sprintf("/repos/%s/actions/runs/%d/jobs?filter=%s&per_page=100", repo, runID, filter)
-	err := c.GH.Paginate(path, func(body []byte) error {
+	err := c.GH.ConditionalPaginate(path, func(body []byte) error {
 		var page struct {
 			Jobs []job `json:"jobs"`
 		}
