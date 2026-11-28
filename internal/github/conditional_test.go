@@ -121,3 +121,67 @@ func TestMissingWorkflowDirectoryKeepsOtherRepoValidators(t *testing.T) {
 		t.Fatalf("run-list revalidation = %d, %v", status, err)
 	}
 }
+
+func TestCapacityPagesCannotEvictActiveRunValidators(t *testing.T) {
+	gh := New("fixture")
+	gh.EnableConditionalReads()
+	const hot = "/repos/org/repo/actions/runs?status=queued"
+	big := `{"extra":"` + strings.Repeat("x", 2<<20) + `"}`
+	last := 0
+	gh.HTTP.Transport = telemetryTestTransport(func(r *http.Request) (*http.Response, error) {
+		res := &http.Response{StatusCode: 200, Header: make(http.Header)}
+		res.Header.Set("ETag", `"same"`)
+		body := "{}"
+		if r.Header.Get("If-None-Match") != "" {
+			res.StatusCode, body = 304, ""
+		} else if r.URL.Query().Has("created") {
+			body = big
+		}
+		res.Body = io.NopCloser(strings.NewReader(body))
+		last = res.StatusCode
+		return res, nil
+	})
+	var got map[string]any
+	if err := gh.ConditionalGet(hot, &got); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 9 {
+		path := fmt.Sprintf("/repos/org/repo-%d/actions/runs?created=2026-11-28", i)
+		if err := gh.ConditionalGet(path, &got); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := gh.ConditionalGet(hot, &got); err != nil || last != 304 {
+		t.Fatalf("active-run validator was evicted by capacity history: status=%d err=%v", last, err)
+	}
+}
+
+func TestFullLastInventoryPageFindsNewlyLinkedRepositories(t *testing.T) {
+	gh := New("fixture")
+	gh.EnableConditionalReads()
+	repo := `{"full_name":"org/repo","owner":{"login":"org"}}`
+	first := "[" + strings.Repeat(repo+",", 99) + repo + "]"
+	addingPage := false
+	gh.HTTP.Transport = telemetryTestTransport(func(r *http.Request) (*http.Response, error) {
+		res := &http.Response{StatusCode: 200, Header: make(http.Header)}
+		res.Header.Set("ETag", `"full"`)
+		body := first
+		switch {
+		case r.URL.Query().Get("page") == "2":
+			body = `[{"full_name":"org/new","owner":{"login":"org"}}]`
+		case r.Header.Get("If-None-Match") == `"full"`:
+			res.StatusCode, body = 304, ""
+		case addingPage:
+			res.Header.Set("Link", "<"+gh.BaseURL+"/orgs/org/repos?per_page=100&page=2>; rel=\"next\"")
+		}
+		res.Body = io.NopCloser(strings.NewReader(body))
+		return res, nil
+	})
+	if repos, err := gh.Repos("org", true); err != nil || len(repos) != 100 {
+		t.Fatalf("first inventory: %d repositories, %v", len(repos), err)
+	}
+	addingPage = true
+	if repos, err := gh.Repos("org", true); err != nil || len(repos) != 101 || repos[100].Name != "org/new" {
+		t.Fatalf("expanded inventory: %d repositories, %v", len(repos), err)
+	}
+}

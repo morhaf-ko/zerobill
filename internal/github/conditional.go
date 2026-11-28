@@ -7,23 +7,33 @@ import (
 )
 
 const (
-	maxCachedPages = 1024
-	maxCachedBytes = 16 << 20
+	maxCachedPagesPerPool = 512
+	maxCachedBytesPerPool = 8 << 20
 )
 
 type pageKey struct{ root, url string }
 
+const (
+	activePool = iota
+	historyPool
+)
+
 type cachedPage struct {
+	pool                 int
 	key                  pageKey
 	finalURL, etag, next string
 	body                 []byte
 }
 
+type pagePool struct {
+	lru   list.List
+	bytes int
+}
+
 type pageCache struct {
 	pages       map[pageKey]*list.Element
 	inventories map[string]map[string]bool
-	lru         list.List
-	bytes       int
+	pools       [2]pagePool
 }
 
 // EnableConditionalReads keeps validators and bodies for this controller's credential.
@@ -39,28 +49,31 @@ func (c *pageCache) get(k pageKey) (cachedPage, bool) {
 	if !ok {
 		return cachedPage{}, false
 	}
-	c.lru.MoveToFront(el)
-	return el.Value.(cachedPage), true
+	page := el.Value.(cachedPage)
+	c.pools[page.pool].lru.MoveToFront(el)
+	return page, true
 }
 
 func (c *pageCache) save(page cachedPage) {
 	c.remove(c.pages[page.key])
-	if page.etag == "" || len(page.body) > maxCachedBytes {
+	if page.etag == "" || len(page.body) > maxCachedBytesPerPool {
 		return
 	}
-	for len(c.pages) >= maxCachedPages || c.bytes+len(page.body) > maxCachedBytes {
-		c.remove(c.lru.Back())
+	pool := &c.pools[page.pool]
+	for pool.lru.Len() >= maxCachedPagesPerPool || pool.bytes+len(page.body) > maxCachedBytesPerPool {
+		c.remove(pool.lru.Back())
 	}
-	c.pages[page.key] = c.lru.PushFront(page)
-	c.bytes += len(page.body)
+	c.pages[page.key] = pool.lru.PushFront(page)
+	pool.bytes += len(page.body)
 }
 
 func (c *pageCache) remove(el *list.Element) {
 	if el != nil {
 		page := el.Value.(cachedPage)
 		delete(c.pages, page.key)
-		c.bytes -= len(page.body)
-		c.lru.Remove(el)
+		pool := &c.pools[page.pool]
+		pool.bytes -= len(page.body)
+		pool.lru.Remove(el)
 	}
 }
 
@@ -92,8 +105,7 @@ func (c *pageCache) invalidateRepoURL(raw string) bool {
 func (c *pageCache) clear() {
 	clear(c.pages)
 	clear(c.inventories)
-	c.lru.Init()
-	c.bytes = 0
+	c.pools = [2]pagePool{}
 }
 
 func (c *pageCache) invalidateRepo(repo string) {

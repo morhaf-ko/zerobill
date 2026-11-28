@@ -812,3 +812,13 @@ func TestOwnedRecoveryObservedWhenRouteWorkFails(t *testing.T) {
 		})
 	}
 }
+
+func TestInterruptedDiscoveryPreventsApply(t *testing.T) {
+	c, vars := newTestController(t, true)
+	c.foundAt = now.Add(-time.Hour)
+	c.discoverErr = "workflow discovery failed"
+	l := step(t, c, 0, result(policy.State{Registered: true, Online: true}))
+	if l.Errors["discover"] == "" || l.Errors["write"] == "" || len(vars.values) != 0 {
+		t.Fatalf("discovery failure did not block apply: %+v, %v", l, vars.values)
+	}
+}

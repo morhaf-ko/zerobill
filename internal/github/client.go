@@ -38,9 +38,9 @@ func New(token string) *Client {
 
 // WithContext bounds an operation without changing the authenticated client.
 func (c *Client) WithContext(ctx context.Context) *Client {
-	copy := *c
-	copy.ctx = ctx
-	return &copy
+	scoped := *c
+	scoped.ctx = ctx
+	return &scoped
 }
 
 var nextLink = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
@@ -204,11 +204,11 @@ func (c *Client) do(method, u string, in, out any, endpoint, root string) (strin
 	if c.Progress != nil {
 		c.Progress(req.URL.Path)
 	}
+	if endpoint == "" && (c.ObserveRequest != nil || root != "") {
+		endpoint = endpointClass(req.URL)
+	}
 	client := c.HTTP
 	if c.ObserveRequest != nil {
-		if endpoint == "" {
-			endpoint = endpointClass(req.URL)
-		}
 		wrapped := *client
 		transport := wrapped.Transport
 		if transport == nil {
@@ -229,7 +229,7 @@ func (c *Client) do(method, u string, in, out any, endpoint, root string) (strin
 	}
 	etag := resp.Header.Get("ETag")
 	if c.backoff != nil && (resp.StatusCode == http.StatusNotModified || resp.StatusCode/100 == 2) {
-		c.backoff.secondary = 0
+		c.backoff.succeeded(u)
 	}
 	finalURL := u
 	if resp.Request != nil {
@@ -270,7 +270,7 @@ func (c *Client) do(method, u string, in, out any, endpoint, root string) (strin
 		status := &StatusError{Method: method, Path: redact(u), Status: resp.Status, Message: e.Message, Code: resp.StatusCode,
 			RateLimited: resp.StatusCode == 429 || resp.Header.Get("X-RateLimit-Remaining") == "0" || resp.Header.Get("Retry-After") != "" || strings.Contains(strings.ToLower(e.Message), "secondary rate limit")}
 		if c.backoff != nil && IsRateLimited(status) {
-			c.backoff.record(time.Now(), resp.Header)
+			c.backoff.record(u, time.Now(), resp.Header)
 		}
 		if c.pages != nil {
 			switch {
@@ -298,7 +298,11 @@ func (c *Client) do(method, u string, in, out any, endpoint, root string) (strin
 				etag = ""
 			}
 		}
-		c.pages.save(cachedPage{key: key, finalURL: finalURL, etag: etag, next: next, body: body})
+		pool := activePool
+		if endpoint == "runs_created" || endpoint == "jobs_all" {
+			pool = historyPool
+		}
+		c.pages.save(cachedPage{pool: pool, key: key, finalURL: finalURL, etag: etag, next: next, body: body})
 	}
 	return next, nil
 }

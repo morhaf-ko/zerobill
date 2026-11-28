@@ -56,7 +56,9 @@ can revisit the five-minute projection.
 
 The tests cover a billing request crossing midnight UTC, Retry-After across
 checks, partial variable writes, periodic drift, pagination after 304, and
-later jobs queuing under an unchanged active run. Interrupted discovery resumes
+later jobs queuing under an unchanged active run. A full terminal inventory
+page is read unconditionally so a new next link can be found. Large history
+responses cannot evict active-run validators. Interrupted discovery resumes
 at its next unfinished repository. An interrupted Blacksmith collection
 retains completed attempts but withholds a capacity result until a complete
 check. The controller fixture runs the whole sequence on one-minute ticks:

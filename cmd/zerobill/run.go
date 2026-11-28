@@ -290,7 +290,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 	for k, v := range r.Errors {
 		l.Errors[k] = v
 	}
-	if c.foundAt.IsZero() && c.discoverErr != "" {
+	if c.discoverErr != "" {
 		l.Errors["discover"] = c.discoverErr
 	}
 	states := adjust(c.a, &c.state, now, r.States, l.Errors)
@@ -343,7 +343,7 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		rl := routeLine{Variable: rt.Variable, Provider: d.Provider, Label: d.Label, Reason: d.Reason, Held: held}
 		// Without --apply the decision counts as applied in memory, so the log
 		// shows the holds a real run would make.
-		took := !c.apply
+		took := !c.apply && readsOK
 		if write {
 			eligible := c.replacementEligible(rl, states)
 			rl.Written = []string{}
@@ -446,9 +446,6 @@ func (c *controller) step(w io.Writer, now time.Time, r collect.Result) error {
 		if err := apply.SaveState(c.a.appliedPath(), c.state); err != nil {
 			l.Errors["state"] = err.Error()
 		}
-	}
-	if c.discoverErr != "" {
-		l.Errors["discover"] = c.discoverErr
 	}
 	if len(c.workflowErrors) > 0 {
 		l.Errors["workflows"] = strings.Join(c.workflowErrors, "; ")
