@@ -81,3 +81,22 @@ with the reduced-volume release at comparable completed checks. Inspect
 per-endpoint status counts, latency, health, routing/recovery logs and the
 operator's independently measured shared quota. Apply and rollback through
 the platform's existing version declaration with its tag and digest.
+
+### Personal REST core quota
+
+The operator added this acceptance on 2026-11-28 when retiring the dotfiles
+`give-agents-github-identity` mission. Run it after the reduced-volume ZeroBill
+release is healthy in production and the operator is doing normal multi-mission
+work with the personal GitHub CLI identity. Use the existing personal
+credential and its shared `core` bucket.
+
+Run the sampler in the background. Take a sample at the start and once per
+minute through the one-hour mark. Each sample calls `gh api rate_limit` once
+and records its UTC timestamp and `resources.core` limit, remaining and
+reset time. Read the sampler output once, after it finishes. Record the
+window, number of samples, minimum remaining, any quota resets and the
+pass or fail result here and in the polling PR evidence. A window passes
+when every sample is strictly above 2,500 remaining. A missing sample
+leaves acceptance unverified.
+
+Result pending the reduced-volume production rollout.
