@@ -47,6 +47,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	defer a.requests.flush(os.Stderr)
 	c, err := newController(a, write)
 	if err != nil {
 		return err
@@ -92,6 +93,7 @@ func run(args []string) error {
 			return err
 		}
 		beat.mark(time.Now())
+		a.requests.flush(os.Stderr)
 		<-tick.C
 	}
 }

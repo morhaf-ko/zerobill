@@ -39,6 +39,7 @@ func status(args []string) error {
 	if err != nil {
 		return err
 	}
+	defer a.requests.flush(os.Stderr)
 	fmt.Fprintf(os.Stderr, "GitHub: %s via %s; owner: %s.\n", a.login, a.authSource, a.cfg.Owner)
 	return reportStatus(os.Stdout, a)
 }

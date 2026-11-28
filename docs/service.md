@@ -198,7 +198,8 @@ see [availability rules](reference.md#how-a-runner-counts-as-down). Zerobill's `
 checks its loop, not your server's power state or GitHub access.
 
 Online commands emit one `github_request` JSON record to standard error for
-each REST transport attempt, including pages and redirects. Group the records
+each REST transport attempt, including pages and redirects. Records are
+timestamped when the transport returns and written after the check. Group them
 by `endpoint`, `method` and `status` to count requests. Status `0` means the
 transport returned without an HTTP response. `duration_ms` measures time to
 response headers or transport failure. `etag` records validator presence.
