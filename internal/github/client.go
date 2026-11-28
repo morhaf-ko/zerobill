@@ -22,6 +22,8 @@ type Client struct {
 	token   string
 	// Progress receives the request path before I/O, without query parameters or credentials.
 	Progress func(string)
+	// ObserveRequest receives sanitized transport results and may be called concurrently.
+	ObserveRequest func(RequestObservation)
 }
 
 // New returns a client for api.github.com. The token is sent only in the
@@ -34,7 +36,7 @@ var nextLink = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
 
 // Get decodes the JSON response of path, relative to BaseURL, into out.
 func (c *Client) Get(path string, out any) error {
-	_, err := c.get(c.BaseURL+path, out)
+	_, err := c.do(http.MethodGet, c.BaseURL+path, nil, out, "")
 	return err
 }
 
@@ -45,9 +47,15 @@ var ErrStop = errors.New("stop pagination")
 // or page returns ErrStop.
 func (c *Client) Paginate(path string, page func(body []byte) error) error {
 	u := c.BaseURL + path
+	var endpoint string
+	if c.ObserveRequest != nil {
+		if first, err := url.Parse(u); err == nil {
+			endpoint = endpointClass(first)
+		}
+	}
 	for u != "" {
 		var raw json.RawMessage
-		next, err := c.get(u, &raw)
+		next, err := c.do(http.MethodGet, u, nil, &raw, endpoint)
 		if err != nil {
 			return err
 		}
@@ -94,15 +102,11 @@ func IsAccessDenied(err error) bool {
 
 // Send issues a write request with a JSON body to path, relative to BaseURL.
 func (c *Client) Send(method, path string, body any) error {
-	_, err := c.do(method, c.BaseURL+path, body, nil)
+	_, err := c.do(method, c.BaseURL+path, body, nil, "")
 	return err
 }
 
-func (c *Client) get(u string, out any) (string, error) {
-	return c.do(http.MethodGet, u, nil, out)
-}
-
-func (c *Client) do(method, u string, in, out any) (string, error) {
+func (c *Client) do(method, u string, in, out any, endpoint string) (string, error) {
 	var reqBody io.Reader
 	if in != nil {
 		raw, err := json.Marshal(in)
@@ -127,7 +131,20 @@ func (c *Client) do(method, u string, in, out any) (string, error) {
 	if c.Progress != nil {
 		c.Progress(req.URL.Path)
 	}
-	resp, err := c.HTTP.Do(req)
+	client := c.HTTP
+	if c.ObserveRequest != nil {
+		if endpoint == "" {
+			endpoint = endpointClass(req.URL)
+		}
+		wrapped := *client
+		transport := wrapped.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		wrapped.Transport = observedTransport{transport, endpoint, c.ObserveRequest}
+		client = &wrapped
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("%s %s: %w", method, redact(u), err)
 	}
